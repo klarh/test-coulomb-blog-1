@@ -715,6 +715,16 @@ for subdir in _copy_dirs:
             shutil.rmtree(dst)
         shutil.copytree(src, dst)
 
+# When bundling PWA, also copy Python source and template so the
+# published site can bootstrap Pyodide (pyodide-loader.js fetches ../coulomb/)
+if _pwa_dir:
+    for src_dir, dst_name in [('/coulomb/coulomb', 'coulomb'), ('/coulomb/template', 'template')]:
+        if os.path.isdir(src_dir):
+            dst = os.path.join('${getPublic()}', dst_name)
+            if os.path.exists(dst):
+                shutil.rmtree(dst)
+            shutil.copytree(src_dir, dst, ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+
 # Copy detail page HTML files from posts/ (without overwriting original CBOR data)
 for html_file in glob.glob(os.path.join(RENDER_ROOT, 'posts/**/*.html'), recursive=True):
     rel = os.path.relpath(html_file, RENDER_ROOT)

@@ -13,9 +13,19 @@ export class GitHubPagesBackend extends StorageBackend {
   #branch = 'main';
   #pathPrefix = '';
   #connected = false;
+  #accountScope = 'default';
 
   get name() { return 'github'; }
   get connected() { return this.#connected; }
+
+  // Set the account scope for per-account config storage.
+  // Must be called before tryRestore() when switching accounts.
+  setAccountScope(name) {
+    this.#accountScope = name;
+  }
+
+  get #configKey() { return `coulomb-github-config_${this.#accountScope}`; }
+  get #tokenKey() { return `coulomb-github-token_${this.#accountScope}`; }
 
   async connect(credentials) {
     const { token, repo, branch, pathPrefix } = credentials;
@@ -44,7 +54,7 @@ export class GitHubPagesBackend extends StorageBackend {
       this.#connected = true;
 
       // Persist config (not the token) to localStorage
-      localStorage.setItem('coulomb-github-config', JSON.stringify({
+      localStorage.setItem(this.#configKey, JSON.stringify({
         owner: this.#owner,
         repo: this.#repo,
         branch: this.#branch,
@@ -60,9 +70,9 @@ export class GitHubPagesBackend extends StorageBackend {
   async disconnect() {
     this.#token = null;
     this.#connected = false;
-    localStorage.removeItem('coulomb-github-config');
+    localStorage.removeItem(this.#configKey);
     // Token is stored separately so user must re-enter it
-    sessionStorage.removeItem('coulomb-github-token');
+    sessionStorage.removeItem(this.#tokenKey);
   }
 
   async upload(path, content) {
@@ -294,10 +304,11 @@ export class GitHubPagesBackend extends StorageBackend {
     }
   }
 
-  // Restore connection from saved config + session token
+  // Restore connection from saved config + session token.
+  // Resets to disconnected state if no config exists for the current account scope.
   tryRestore() {
-    const configStr = localStorage.getItem('coulomb-github-config');
-    const token = sessionStorage.getItem('coulomb-github-token');
+    const configStr = localStorage.getItem(this.#configKey);
+    const token = sessionStorage.getItem(this.#tokenKey);
     if (configStr && token) {
       const config = JSON.parse(configStr);
       this.#owner = config.owner;
@@ -308,12 +319,19 @@ export class GitHubPagesBackend extends StorageBackend {
       this.#connected = true;
       return true;
     }
+    // No saved config for this account — reset to disconnected
+    this.#token = null;
+    this.#owner = '';
+    this.#repo = '';
+    this.#branch = 'main';
+    this.#pathPrefix = '';
+    this.#connected = false;
     return false;
   }
 
   // Save token to session storage (not localStorage for security)
   saveToken(token) {
-    sessionStorage.setItem('coulomb-github-token', token);
+    sessionStorage.setItem(this.#tokenKey, token);
   }
 
   get repoDisplay() {
@@ -473,6 +491,27 @@ export class GitHubPagesBackend extends StorageBackend {
         pathPrefix: this.#pathPrefix,
       },
     };
+  }
+
+  // Remove persisted config for a specific account (used on account delete).
+  static removeAccountConfig(accountName) {
+    localStorage.removeItem(`coulomb-github-config_${accountName}`);
+    sessionStorage.removeItem(`coulomb-github-token_${accountName}`);
+  }
+
+  // Migrate old global config key to a scoped per-account key.
+  static migrateGlobalConfig(accountName) {
+    const old = localStorage.getItem('coulomb-github-config');
+    if (old && !localStorage.getItem(`coulomb-github-config_${accountName}`)) {
+      localStorage.setItem(`coulomb-github-config_${accountName}`, old);
+    }
+    localStorage.removeItem('coulomb-github-config');
+
+    const oldToken = sessionStorage.getItem('coulomb-github-token');
+    if (oldToken && !sessionStorage.getItem(`coulomb-github-token_${accountName}`)) {
+      sessionStorage.setItem(`coulomb-github-token_${accountName}`, oldToken);
+    }
+    sessionStorage.removeItem('coulomb-github-token');
   }
 }
 
