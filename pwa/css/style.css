@@ -540,18 +540,6 @@ label {
 }
 
 /* Provisioning */
-.provision-pin {
-  font-size: 2rem;
-  font-weight: 700;
-  letter-spacing: 0.3em;
-  color: var(--accent);
-  text-align: center;
-  padding: 1rem;
-  background: var(--surface);
-  border-radius: var(--radius);
-  margin: 0.5rem 0;
-}
-
 .provision-url {
   display: block;
   word-break: break-all;
@@ -565,6 +553,16 @@ label {
 
 .provision-url:hover {
   color: var(--accent);
+}
+
+.hint-banner {
+  font-size: 0.85rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0;
+  background: var(--surface);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  word-break: break-all;
 }
 
 .qr-placeholder {

@@ -171,7 +171,9 @@ function bindEvents() {
   document.getElementById('import-file').addEventListener('change', handleImport);
 
   // Device provisioning
-  document.getElementById('btn-provision-device').addEventListener('click', handleProvisionDevice);
+  document.getElementById('btn-request-key').addEventListener('click', handleRequestKey);
+  document.getElementById('btn-provision-send').addEventListener('click', handleProvisionSend);
+  document.getElementById('btn-provision-receive').addEventListener('click', handleProvisionReceive);
 
   // Pull sources
   document.getElementById('btn-add-source').addEventListener('click', handleAddSource);
@@ -703,6 +705,30 @@ async function refreshSync() {
     connected.classList.remove('hidden');
     document.getElementById('github-repo-display').textContent =
       `Connected to ${backend.repoDisplay}`;
+
+    // Check if Pages URL is in identity locations
+    const hintEl = document.getElementById('pages-location-hint');
+    try {
+      const info = await getIdentityInfo();
+      const pagesBase = backend.pagesUrl;
+      if (info && info.locations && !info.locations.some(loc => loc.startsWith(pagesBase))) {
+        const pagesUrl = pagesBase + 'public';
+        hintEl.innerHTML =
+          `<p class="hint-banner">⚠️ <strong>${escapeHtml(pagesUrl)}</strong> is not in your published locations.
+           <button id="btn-add-pages-loc" class="link-btn">Add it</button></p>`;
+        hintEl.classList.remove('hidden');
+        document.getElementById('btn-add-pages-loc').addEventListener('click', async (e) => {
+          e.target.disabled = true;
+          e.target.textContent = 'Adding…';
+          await addLocation(pagesUrl);
+          await saveToIDB(getPyodide(), getWorkspacePath());
+          hintEl.innerHTML = '<p class="hint-banner">✓ Location added!</p>';
+          setTimeout(() => hintEl.classList.add('hidden'), 3000);
+        });
+      } else {
+        hintEl.classList.add('hidden');
+      }
+    } catch { hintEl.classList.add('hidden'); }
   } else {
     notConnected.classList.remove('hidden');
     connected.classList.add('hidden');
@@ -1007,29 +1033,99 @@ async function handleImport(e) {
 
 // ── Device Provisioning ──
 
-async function handleProvisionDevice() {
-  const statusEl = document.getElementById('provision-status');
-  const resultEl = document.getElementById('provision-result');
+// ── Device Provisioning (ephemeral key exchange) ──
+
+// Step 1: New device generates ephemeral X25519 keypair, shows public key as QR/URL
+async function handleRequestKey() {
+  const statusEl = document.getElementById('request-status');
+  const resultEl = document.getElementById('request-key-result');
 
   try {
-    showStatus(statusEl, 'Generating key…', 'success');
+    showStatus(statusEl, 'Generating request…', 'success');
 
-    // Generate a PIN (6 digits)
-    const pin = String(Math.floor(100000 + Math.random() * 900000));
-
-    // Generate a new signing key and add it to the identity, then encrypt with PIN
     const result = await runPy(`
-import os, glob, json, hashlib, secrets
+import json, base64
+import nacl.public
+
+# Generate ephemeral Curve25519 keypair
+ephemeral = nacl.public.PrivateKey.generate()
+ephemeral_pub = bytes(ephemeral.public_key)
+ephemeral_priv = bytes(ephemeral)
+
+_bridge_out = json.dumps({
+    'pub': base64.urlsafe_b64encode(ephemeral_pub).decode(),
+    'priv': base64.urlsafe_b64encode(ephemeral_priv).decode(),
+})
+`);
+
+    const data = JSON.parse(result);
+
+    // Store ephemeral private key in sessionStorage for step 3
+    sessionStorage.setItem('coulomb-provision-ephemeral', data.priv);
+
+    const requestUrl = `${location.origin}${location.pathname}#provision/request/${data.pub}`;
+
+    resultEl.classList.remove('hidden');
+    try {
+      const qrSvg = await generateQRCodeSVG(requestUrl);
+      document.getElementById('request-qr').innerHTML =
+        `<p class="help-text">Show this to the source device:</p>${qrSvg}`;
+    } catch (e) {
+      document.getElementById('request-qr').innerHTML =
+        `<p class="help-text">QR generation failed. Use the link below.</p>`;
+    }
+
+    document.getElementById('request-url-display').innerHTML =
+      `<p class="help-text">Or copy this link:</p>
+       <code class="provision-url" id="request-url">${escapeHtml(requestUrl)}</code>`;
+    document.getElementById('request-url').addEventListener('click', () => {
+      navigator.clipboard.writeText(requestUrl);
+      showStatus(statusEl, 'Link copied!', 'success');
+    });
+
+    showStatus(statusEl, 'Waiting for source device…', 'success');
+  } catch (e) {
+    showStatus(statusEl, `Error: ${e.message}`, 'error');
+  }
+}
+
+// Step 2: Source device encrypts signing key to the new device's ephemeral public key
+async function handleProvisionSend() {
+  const statusEl = document.getElementById('provision-status');
+  const resultEl = document.getElementById('provision-result');
+  const input = document.getElementById('provision-request-input').value.trim();
+
+  // Extract ephemeral public key from URL or raw base64
+  let ephemeralPub;
+  const match = input.match(/#provision\/request\/([A-Za-z0-9_-]+={0,2})/);
+  if (match) {
+    ephemeralPub = match[1];
+  } else if (input.match(/^[A-Za-z0-9_-]+={0,2}$/)) {
+    ephemeralPub = input;
+  } else {
+    showStatus(statusEl, 'Paste the request link from the new device', 'error');
+    return;
+  }
+
+  try {
+    showStatus(statusEl, 'Generating and encrypting key…', 'success');
+
+    const result = await runPy(`
+import os, glob, json, base64
+import nacl.signing, nacl.public, cbor2
+
 os.chdir('${getWorkspacePath()}')
 
-import nacl.signing, nacl.secret, nacl.utils, cbor2
+# Decode the new device's ephemeral public key
+target_pub_bytes = base64.urlsafe_b64decode(${JSON.stringify(ephemeralPub)})
+target_pub = nacl.public.PublicKey(target_pub_bytes)
 
 # Generate new signing key
 key = nacl.signing.SigningKey.generate()
 key_id = bytes(key.verify_key).hex()
 seed = bytes(key)  # 32 bytes
 
-# Save as signing key file
+# Save signing key locally
 private_key = dict(id=key_id, signing=seed, api='pynacl')
 key_path = '${getWorkspacePath()}/private/signing.' + key_id + '.cbor'
 with open(key_path, 'wb') as f:
@@ -1055,16 +1151,11 @@ with open('${getWorkspacePath()}/changelog', 'a') as _cl:
         key_files=[key_path]
     )
 
-# Encrypt seed with PIN using NaCl secretbox
-pin_str = ${JSON.stringify(pin)}
-salt = secrets.token_bytes(16)
-# Derive key from PIN + salt using SHA-256 (simple but sufficient for a 6-digit PIN protecting an ephemeral transfer)
-dk = hashlib.pbkdf2_hmac('sha256', pin_str.encode(), salt, 100000)
-box = nacl.secret.SecretBox(dk)
-encrypted = box.encrypt(seed)  # nonce + ciphertext
+# Encrypt seed using NaCl SealedBox (anonymous encryption to target's public key)
+sealed_box = nacl.public.SealedBox(target_pub)
+encrypted = sealed_box.encrypt(seed)
 
-import base64
-payload = base64.urlsafe_b64encode(salt + encrypted).decode()
+payload = base64.urlsafe_b64encode(encrypted).decode()
 
 _bridge_out = json.dumps({
     'key_id': key_id,
@@ -1075,59 +1166,75 @@ _bridge_out = json.dumps({
     const data = JSON.parse(result);
     await saveToIDB(getPyodide(), getWorkspacePath());
 
-    // Show result
-    resultEl.classList.remove('hidden');
-    document.getElementById('provision-pin').textContent = pin;
+    const responseUrl = `${location.origin}${location.pathname}#provision/respond/${data.payload}`;
 
-    // Generate QR code SVG
-    const importUrl = `${location.origin}${location.pathname}#import/${data.payload}`;
+    resultEl.classList.remove('hidden');
     try {
-      const qrSvg = await generateQRCodeSVG(importUrl);
+      const qrSvg = await generateQRCodeSVG(responseUrl);
       document.getElementById('provision-qr').innerHTML =
-        `<p class="help-text">Scan this QR code on the new device:</p>${qrSvg}`;
+        `<p class="help-text">Show this to the new device:</p>${qrSvg}`;
     } catch (e) {
       document.getElementById('provision-qr').innerHTML =
-        `<p class="help-text">QR generation failed (${escapeHtml(e.message)}). Use the URL below instead.</p>`;
+        `<p class="help-text">QR generation failed. Use the link below.</p>`;
     }
 
     document.getElementById('provision-url-display').innerHTML =
-      `<p class="help-text">Or copy this URL:</p>
-       <code class="provision-url" id="provision-url">${escapeHtml(importUrl)}</code>`;
+      `<p class="help-text">Or copy this link:</p>
+       <code class="provision-url" id="provision-url">${escapeHtml(responseUrl)}</code>`;
     document.getElementById('provision-url').addEventListener('click', () => {
-      navigator.clipboard.writeText(importUrl);
-      showStatus(statusEl, 'URL copied!', 'success');
+      navigator.clipboard.writeText(responseUrl);
+      showStatus(statusEl, 'Link copied!', 'success');
     });
 
-    showStatus(statusEl, `Key ${data.key_id.slice(0, 12)}… created and added to identity`, 'success');
+    showStatus(statusEl, `Key ${data.key_id.slice(0, 12)}… created. Transfer to new device.`, 'success');
   } catch (e) {
     showStatus(statusEl, `Error: ${e.message}`, 'error');
   }
 }
 
-// Check for key import URL fragment at boot
-async function checkKeyImport() {
-  const hash = location.hash;
-  if (!hash.startsWith('#import/')) return false;
+// Step 3: New device decrypts the signing key using its ephemeral private key
+async function handleProvisionReceive(payloadOverride) {
+  const statusEl = document.getElementById('receive-status');
+  let payload;
 
-  const payload = hash.slice('#import/'.length);
-  const pin = prompt('Enter the PIN from the source device:');
-  if (!pin) return false;
+  if (typeof payloadOverride === 'string') {
+    payload = payloadOverride;
+  } else {
+    const input = document.getElementById('provision-response-input').value.trim();
+    const match = input.match(/#provision\/respond\/([A-Za-z0-9_-]+={0,2})/);
+    if (match) {
+      payload = match[1];
+    } else if (input.match(/^[A-Za-z0-9_-]+={0,2}$/)) {
+      payload = input;
+    } else {
+      showStatus(statusEl, 'Paste the response link from the source device', 'error');
+      return;
+    }
+  }
+
+  const ephemeralPriv = sessionStorage.getItem('coulomb-provision-ephemeral');
+  if (!ephemeralPriv) {
+    showStatus(statusEl, 'No pending key request. Run Step 1 first on this device.', 'error');
+    return;
+  }
 
   try {
+    showStatus(statusEl, 'Decrypting key…', 'success');
+
     await runPy(`
-import base64, hashlib, json, os
-import nacl.secret, nacl.signing, cbor2
+import base64, json, os
+import nacl.public, nacl.signing, cbor2
 
-payload = base64.urlsafe_b64decode(${JSON.stringify(payload)})
-salt = payload[:16]
-encrypted = payload[16:]
+# Recover ephemeral private key
+ephemeral_priv_bytes = base64.urlsafe_b64decode(${JSON.stringify(ephemeralPriv)})
+ephemeral_priv = nacl.public.PrivateKey(ephemeral_priv_bytes)
 
-pin_str = ${JSON.stringify(pin)}
-dk = hashlib.pbkdf2_hmac('sha256', pin_str.encode(), salt, 100000)
-box = nacl.secret.SecretBox(dk)
-seed = box.decrypt(encrypted)
+# Decrypt sealed box
+encrypted = base64.urlsafe_b64decode(${JSON.stringify(payload)})
+unseal = nacl.public.SealedBox(ephemeral_priv)
+seed = unseal.decrypt(encrypted)
 
-# Reconstruct key
+# Reconstruct signing key
 key = nacl.signing.SigningKey(seed)
 key_id = bytes(key.verify_key).hex()
 
@@ -1142,13 +1249,45 @@ _bridge_out = json.dumps({'key_id': key_id})
 `);
 
     await saveToIDB(getPyodide(), getWorkspacePath());
+    sessionStorage.removeItem('coulomb-provision-ephemeral');
     location.hash = '';
-    alert('Key imported successfully! You can now sign posts with this device.');
-    return true;
+
+    showStatus(statusEl, 'Key imported successfully! You can now sign posts.', 'success');
   } catch (e) {
-    alert(`Key import failed: ${e.message}`);
+    showStatus(statusEl, `Import failed: ${e.message}`, 'error');
+  }
+}
+
+// Check for provisioning URL fragments at boot
+async function checkKeyImport() {
+  const hash = location.hash;
+
+  if (hash.startsWith('#provision/respond/')) {
+    const payload = hash.slice('#provision/respond/'.length);
+    // Auto-fill step 3 input and attempt import if ephemeral key exists
+    const input = document.getElementById('provision-response-input');
+    if (input) input.value = location.href;
+    if (sessionStorage.getItem('coulomb-provision-ephemeral')) {
+      await handleProvisionReceive(payload);
+    }
+    return true;
+  }
+
+  if (hash.startsWith('#provision/request/')) {
+    // Auto-fill step 2 input on source device
+    const input = document.getElementById('provision-request-input');
+    if (input) input.value = location.href;
+    return true;
+  }
+
+  // Legacy: handle old #import/ URLs gracefully
+  if (hash.startsWith('#import/')) {
+    alert('This import link uses an older format that is no longer supported. Please use the new provisioning flow.');
+    location.hash = '';
     return false;
   }
+
+  return false;
 }
 
 // Need runPy accessible for provisioning

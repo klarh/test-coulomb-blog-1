@@ -196,6 +196,7 @@
           <div id="github-connected" class="hidden">
             <p id="github-repo-display"></p>
             <p id="github-permissions-status"></p>
+            <div id="pages-location-hint" class="hidden"></div>
             <button id="btn-github-disconnect" class="secondary-btn">Disconnect</button>
           </div>
         </div>
@@ -243,15 +244,45 @@
 
       <div class="identity-section">
         <h2>Device Provisioning</h2>
-        <p class="help-text">Add a new device by generating a signing key to transfer.</p>
-        <button id="btn-provision-device" class="secondary-btn">Generate Key for New Device</button>
-        <div id="provision-result" class="hidden">
-          <div id="provision-qr"></div>
-          <div id="provision-url-display"></div>
-          <p class="help-text">Enter this PIN on the new device:</p>
-          <div id="provision-pin" class="provision-pin"></div>
+        <p class="help-text">Transfer a signing key between devices using encrypted QR codes.</p>
+
+        <div class="setup-steps">
+          <div class="step">
+            <span class="step-number">1</span>
+            <div>
+              <strong>On the new device</strong> — tap "Request Key" to generate a one-time encryption key.
+              <br><button id="btn-request-key" class="secondary-btn">Request Key</button>
+              <div id="request-key-result" class="hidden">
+                <div id="request-qr"></div>
+                <div id="request-url-display"></div>
+              </div>
+              <div id="request-status" class="status-msg hidden"></div>
+            </div>
+          </div>
+          <div class="step">
+            <span class="step-number">2</span>
+            <div>
+              <strong>On the source device</strong> — scan the QR or paste the link, then tap "Send Key".
+              <br><input type="text" id="provision-request-input" placeholder="Paste request link (or scan QR)">
+              <button id="btn-provision-send" class="secondary-btn">Send Key</button>
+              <div id="provision-result" class="hidden">
+                <div id="provision-qr"></div>
+                <div id="provision-url-display"></div>
+              </div>
+              <div id="provision-status" class="status-msg hidden"></div>
+            </div>
+          </div>
+          <div class="step">
+            <span class="step-number">3</span>
+            <div>
+              <strong>On the new device</strong> — scan the response QR or paste the link to complete the transfer.
+              <br><em class="help-text">This happens automatically if you opened the response link, or paste it below:</em>
+              <br><input type="text" id="provision-response-input" placeholder="Paste response link (or scan QR)">
+              <button id="btn-provision-receive" class="secondary-btn">Import Key</button>
+              <div id="receive-status" class="status-msg hidden"></div>
+            </div>
+          </div>
         </div>
-        <div id="provision-status" class="status-msg hidden"></div>
       </div>
     </section>
   </main>
