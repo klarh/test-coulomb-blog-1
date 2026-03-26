@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="description" content="Coulomb - Decentralized microblogging PWA">
+  <title>Coulomb</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- Sidebar toggle (CSS-only mechanism) -->
+  <input type="checkbox" id="sidebar-toggle" class="sr-only">
+
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h2>Accounts</h2>
+      <label for="sidebar-toggle" class="sidebar-close" aria-label="Close menu">✕</label>
+    </div>
+    <div id="sidebar-accounts"></div>
+    <div class="sidebar-create">
+      <input type="text" id="sidebar-new-account" placeholder="New account name">
+      <button id="btn-sidebar-create-account" class="sidebar-create-btn" title="Create account">+</button>
+    </div>
+    <hr class="sidebar-divider">
+    <nav class="sidebar-nav">
+      <button id="nav-feed" class="nav-btn active">Feed</button>
+      <button id="nav-identity" class="nav-btn">Identity</button>
+      <button id="nav-sync" class="nav-btn">Sync</button>
+    </nav>
+  </aside>
+  <label for="sidebar-toggle" class="sidebar-overlay"></label>
+
+  <header>
+    <label for="sidebar-toggle" class="hamburger-btn" aria-label="Open menu">☰</label>
+    <h1>⚡ Coulomb</h1>
+  </header>
+
+  <main>
+    <!-- Loading screen shown while Pyodide initializes -->
+    <section id="loading-screen">
+      <div class="loading-container">
+        <p>Loading Coulomb runtime…</p>
+        <progress id="load-progress" max="100" value="0"></progress>
+        <p id="load-status">Initializing…</p>
+      </div>
+    </section>
+
+    <!-- Feed view: compose + threaded feed -->
+    <section id="view-feed" class="view hidden">
+      <div class="compose-box">
+        <div id="reply-context" class="reply-context hidden">
+          <span id="reply-label">Replying to…</span>
+          <button id="btn-cancel-reply" class="cancel-reply-btn">✕</button>
+        </div>
+        <textarea id="post-text" placeholder="What's on your mind?" rows="4"></textarea>
+        <div class="compose-actions">
+          <label class="file-attach-btn">
+            📎 Attach
+            <input type="file" id="post-files" multiple hidden>
+          </label>
+          <div id="attached-files"></div>
+          <button id="btn-post" class="primary-btn">Post</button>
+        </div>
+      </div>
+      <div id="post-status" class="status-msg hidden"></div>
+      <div id="feed-container"></div>
+    </section>
+
+    <!-- Identity view -->
+    <section id="view-identity" class="view hidden">
+      <div id="identity-status"></div>
+      <div id="identity-info" class="hidden">
+        <h2>Your Identity</h2>
+        <div id="identity-details"></div>
+
+        <div class="identity-section">
+          <h3>Profile</h3>
+          <label for="display-name">Display Name</label>
+          <input type="text" id="display-name" placeholder="Your name">
+          <label for="avatar-url">Avatar URL</label>
+          <input type="text" id="avatar-url" placeholder="https://example.com/photo.jpg">
+          <button id="btn-save-profile" class="primary-btn">Save Profile</button>
+        </div>
+
+        <div class="identity-section">
+          <h3>Custom Config</h3>
+          <p class="help-text">Add custom metadata to your identity (bio, website, etc.)</p>
+          <div id="config-fields"></div>
+          <div class="config-add-row">
+            <input type="text" id="config-new-key" placeholder="Key (e.g. bio)">
+            <input type="text" id="config-new-value" placeholder="Value">
+            <button id="btn-add-config" class="secondary-btn">Add</button>
+          </div>
+        </div>
+
+        <div class="identity-section">
+          <h3>Locations</h3>
+          <p class="help-text">URLs where your feed is published (for federation)</p>
+          <div id="locations-list"></div>
+          <div class="location-add-row">
+            <input type="text" id="location-new-url" placeholder="https://yoursite.github.io/">
+            <button id="btn-add-location" class="secondary-btn">Add</button>
+          </div>
+        </div>
+
+        <div class="identity-section">
+          <h3>Keys</h3>
+          <div id="keys-list"></div>
+        </div>
+
+        <div class="identity-section">
+          <h3>Site Settings</h3>
+          <label for="site-title">Page Title</label>
+          <input type="text" id="site-title" placeholder="My Posts">
+          <div class="theme-settings">
+            <label for="theme-accent">Accent Color</label>
+            <div class="color-picker-row">
+              <input type="color" id="theme-accent" value="#e94560">
+              <span id="theme-accent-hex" class="color-hex">#e94560</span>
+            </div>
+            <label for="theme-mode">Color Scheme</label>
+            <select id="theme-mode">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+              <option value="auto">Auto (system)</option>
+            </select>
+          </div>
+          <button id="btn-save-site-config" class="primary-btn">Save Site Settings</button>
+        </div>
+
+        <div class="danger-zone">
+          <h3>Danger Zone</h3>
+          <div id="danger-zone-content"></div>
+        </div>
+      </div>
+      <div id="identity-init" class="hidden">
+        <h2>Get Started</h2>
+        <p>No identity found. Initialize one to start posting.</p>
+        <button id="btn-init" class="primary-btn">Initialize Identity</button>
+      </div>
+    </section>
+
+    <!-- Sync view -->
+    <section id="view-sync" class="view hidden">
+      <div class="sync-config">
+        <h2>Storage Backend</h2>
+        <div class="backend-selector">
+          <select id="backend-select">
+            <option value="github">GitHub Pages</option>
+            <option value="local" disabled>Local Only</option>
+          </select>
+        </div>
+
+        <div id="github-config" class="backend-config">
+          <h3>GitHub Pages</h3>
+          <div id="github-auth-status"></div>
+          <div id="github-not-connected">
+            <div class="setup-steps">
+              <div class="setup-step">
+                <span class="step-number">1</span>
+                <div class="step-content">
+                  <label for="github-token">Paste a Personal Access Token</label>
+                  <input type="password" id="github-token" placeholder="github_pat_...">
+                  <p class="help-text">
+                    <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Create a fine-grained token →</a>
+                    <br>Required permissions: <strong>Contents</strong> (Read &amp; write), <strong>Pages</strong> (Read &amp; write)
+                  </p>
+                  <button id="btn-github-lookup" class="secondary-btn">Look Up Username</button>
+                </div>
+              </div>
+              <div class="setup-step">
+                <span class="step-number">2</span>
+                <div class="step-content">
+                  <label for="github-repo">Repository (owner/repo)</label>
+                  <input type="text" id="github-repo" placeholder="username/my-feed">
+                  <p class="help-text">
+                    <a id="github-create-repo-link" href="https://github.com/new" target="_blank" rel="noopener">Create a repository on GitHub →</a>
+                    or <button id="btn-github-create-repo" class="link-btn">create one now</button>
+                  </p>
+                </div>
+              </div>
+              <div class="setup-step">
+                <span class="step-number">3</span>
+                <div class="step-content">
+                  <label for="github-branch">Branch</label>
+                  <input type="text" id="github-branch" placeholder="main" value="main">
+                  <label for="github-path-prefix">Path Prefix (optional)</label>
+                  <input type="text" id="github-path-prefix" placeholder="e.g. blog/">
+                </div>
+              </div>
+            </div>
+            <button id="btn-github-connect" class="primary-btn">Connect</button>
+          </div>
+          <div id="github-connected" class="hidden">
+            <p id="github-repo-display"></p>
+            <p id="github-permissions-status"></p>
+            <button id="btn-github-disconnect" class="secondary-btn">Disconnect</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sync-actions">
+        <h2>Sources</h2>
+        <p class="help-text">Follow other Coulomb sites to pull their posts into your feed.</p>
+        <div class="source-add">
+          <input type="text" id="source-url" placeholder="https://example.com/public">
+          <button id="btn-add-source" class="secondary-btn">Add</button>
+        </div>
+        <div id="source-list"></div>
+        <div class="source-actions">
+          <button id="btn-pull-all" class="primary-btn" disabled>Pull All Sources</button>
+        </div>
+        <div id="pull-status" class="status-msg hidden"></div>
+      </div>
+
+      <div class="sync-actions">
+        <h2>Publish</h2>
+        <div id="sync-status"></div>
+        <div id="pending-changes"></div>
+        <label class="checkbox-label">
+          <input type="checkbox" id="publish-include-pwa"> Bundle PWA authoring interface
+        </label>
+        <button id="btn-publish" class="primary-btn" disabled>Publish Changes</button>
+      </div>
+
+      <div class="identity-section">
+        <h2>Data</h2>
+        <p class="help-text">Export/import your workspace for backup or migration to a different PWA location.</p>
+        <div class="data-actions">
+          <button id="btn-export" class="secondary-btn">Export Workspace (.tar.gz)</button>
+          <label class="checkbox-label">
+            <input type="checkbox" id="export-include-keys" checked> Include private keys
+          </label>
+        </div>
+        <div class="data-actions" style="margin-top:0.5rem">
+          <button id="btn-import" class="secondary-btn">Import Workspace</button>
+          <input type="file" id="import-file" accept=".tar.gz,.tgz" class="hidden">
+        </div>
+        <div id="data-status" class="status-msg hidden"></div>
+      </div>
+
+      <div class="identity-section">
+        <h2>Device Provisioning</h2>
+        <p class="help-text">Add a new device by generating a signing key to transfer.</p>
+        <button id="btn-provision-device" class="secondary-btn">Generate Key for New Device</button>
+        <div id="provision-result" class="hidden">
+          <div id="provision-qr"></div>
+          <div id="provision-url-display"></div>
+          <p class="help-text">Enter this PIN on the new device:</p>
+          <div id="provision-pin" class="provision-pin"></div>
+        </div>
+        <div id="provision-status" class="status-msg hidden"></div>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

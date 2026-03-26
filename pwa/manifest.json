@@ -1,0 +1,17 @@
+{
+  "name": "Coulomb",
+  "short_name": "Coulomb",
+  "description": "Decentralized microblogging - author and publish posts",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#1a1a2e",
+  "theme_color": "#1a1a2e",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
