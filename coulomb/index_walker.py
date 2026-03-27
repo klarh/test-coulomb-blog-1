@@ -57,7 +57,7 @@ def parse_entry(filename):
     if len(bits) < 3 or not filename.endswith('cbor'):
         return None
     entry_type = bits[0]
-    if entry_type not in ('post', 'reply'):
+    if entry_type not in ('post', 'reply', 'ref'):
         return None
     return {
         'type': entry_type,

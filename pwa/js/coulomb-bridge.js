@@ -462,12 +462,27 @@ _bridge_out = json.dumps({'post_path': str(_post_result) if _post_result else No
   return JSON.parse(result);
 }
 
+// ── Markdown ──
+
+/**
+ * Render Markdown text to sanitised HTML via the Python markdown library.
+ * Returns an HTML string.
+ */
+export async function renderMarkdown(text) {
+  const result = await runPy(`
+from coulomb.markdown_render import render_markdown
+_bridge_out = render_markdown(${JSON.stringify(text)})
+`);
+  return result || '';
+}
+
 export async function listRecentPosts(limit = 20) {
   const result = await runPy(`
 import os, glob, json
 os.chdir('${getWorkspace()}')
 
 import cbor2
+from coulomb.markdown_render import render_markdown as _render_md
 
 # Build latest identity config map (author_id → config dict)
 _latest_configs = {}
@@ -496,6 +511,7 @@ for pf in post_files:
         file_list = content.get('files', [])
         reply_to = content.get('reply_to', None)
         post_id = content.get('id', '')
+        _text = content.get('text', '')
         # Files directory: posts/{author_id}/{post_id}/files/
         post_dir = os.path.dirname(pf)
         files_dir = os.path.join(post_dir, post_id, 'files')
@@ -503,7 +519,9 @@ for pf in post_files:
         posts.append({
             'path': pf,
             'rel_path': pf.replace('${getPublic()}/', ''),
-            'text': content.get('text', ''),
+            'text': _text,
+            'text_html': _render_md(_text),
+            'tags': content.get('tags', []),
             'time': content.get('time', ''),
             'author_id': author_id,
             'display_name': config.get('display_name', ''),

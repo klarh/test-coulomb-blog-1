@@ -6,6 +6,7 @@ import cbor2
 import nacl.signing
 
 from .cmd import register_subcommand
+from .tags import extract_tags
 from .util import read_cbor, write_cbor
 from .TimeArchive import UserPostArchive
 
@@ -97,6 +98,7 @@ def main(root, author, text, files, signatures, changelogs, reply):
             author=author_info,
             files=files,
             id=post_id,
+            tags=extract_tags(text) if text else [],
             text=text,
             time=archive_entry.timestamp.isoformat(),
             **extra_post_fields,
@@ -121,6 +123,24 @@ def main(root, author, text, files, signatures, changelogs, reply):
 
         os.makedirs(target_dir, exist_ok=True)
         write_cbor({post_fname: entry})
+
+        # Write tag reference files
+        for tag in post.get('tags', []):
+            tag_dir = os.path.join(
+                root, 'tags', tag['type'], tag['value']
+            )
+            ref_fname = os.path.join(
+                tag_dir, 'ref.{}.cbor'.format(post_id)
+            )
+            os.makedirs(tag_dir, exist_ok=True)
+            ref = dict(
+                author=author_info['id'],
+                post_id=post_id,
+                post_path=os.path.relpath(post_fname, root),
+                timestamp=archive_entry.timestamp.isoformat(),
+            )
+            write_cbor({ref_fname: ref})
+            changed_files.append(ref_fname)
 
         done = True
 

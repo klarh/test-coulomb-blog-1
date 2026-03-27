@@ -11,9 +11,11 @@ import sqlite3
 
 import cbor2
 import jinja2
+from markupsafe import Markup
 
 from .cmd import register_subcommand
 from .index_walker import IndexWalker, load_index, parse_entry
+from .markdown_render import render_markdown
 
 
 def _cubehelix_rgb(lam, s=0, r=1, h=1.2, gamma=1):
@@ -198,6 +200,12 @@ TEMPLATES = dict(
 </head>
 <body>
     <div class="feed">
+    {% if tag_name is defined %}
+    <div style="padding: 1rem; display: flex; align-items: center; gap: 0.75rem;">
+        <a href="{{ root_path }}/{{ html_dir }}/tags/index.html" class="page-btn" style="font-size: 0.85em;">← All tags</a>
+        <h2 style="margin: 0; font-size: 1.2em;">#{{ tag_name }}</h2>
+    </div>
+    {% endif %}
     {% for post in posts %}
         <article class="post-card">
             <div class="post-header">
@@ -214,7 +222,12 @@ TEMPLATES = dict(
                 </div>
                 <a class="post-time" href="{{ post.direct_link }}">{{ post.time[:16] }}</a>
             </div>
-            <div class="post-body">{{ post.text|e }}</div>
+            <div class="post-body md-content">{{ post.text|markdown }}</div>
+            {% if post.get('tags') %}
+            <div class="post-tags">
+                {% for tag in post.tags %}<a href="{{ root_path }}/{{ html_dir }}/tags/{{ tag.value }}/latest.html" class="post-tag">#{{ tag.value|display_tag }}</a> {% endfor %}
+            </div>
+            {% endif %}
             {% for reply in post.get('replies', []) %}
             <div class="reply-card">
                 <div class="post-header">
@@ -235,7 +248,12 @@ TEMPLATES = dict(
                     <span class="post-time">{{ reply.time[:16] }}</span>
                     {% endif %}
                 </div>
-                <div class="post-body">{{ reply.text|e }}</div>
+                <div class="post-body md-content">{{ reply.text|markdown }}</div>
+                {% if reply.get('tags') %}
+                <div class="post-tags">
+                    {% for tag in reply.tags %}<a href="{{ root_path }}/{{ html_dir }}/tags/{{ tag.value }}/latest.html" class="post-tag">#{{ tag.value|display_tag }}</a> {% endfor %}
+                </div>
+                {% endif %}
             </div>
             {% endfor %}
         </article>
@@ -245,10 +263,40 @@ TEMPLATES = dict(
     {% if previous_page %}
         <a href="{{ previous_page }}" class="page-btn">← Older</a>
     {% endif %}
+        <a href="{{ root_path }}/{{ html_dir }}/tags/index.html" class="page-btn">#Tags</a>
     {% if next_page %}
         <a href="{{ next_page }}" class="page-btn">Newer →</a>
     {% endif %}
     </nav>
+</body>
+    """,
+    tag_index="""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tags</title>
+    <link rel="stylesheet" type="text/css" href="{{root_path}}/static/global/style.css">
+    {% if text_config.get('theme.accent') or text_config.get('theme.mode') %}
+    <style>
+      :root {
+        {% if text_config.get('theme.accent') %}--accent: {{ text_config['theme.accent'] }};{% endif %}
+        {% if text_config.get('theme.accent') %}--accent-hover: {{ text_config['theme.accent'] }};{% endif %}
+      }
+    </style>
+    {% endif %}
+</head>
+<body>
+    <div class="feed">
+        <h1 style="padding: 1rem; font-size: 1.4em;">Tags</h1>
+        <div style="padding: 0 1rem 1rem; display: flex; flex-wrap: wrap; gap: 0.5rem;">
+        {% for tag in tags %}
+            <a href="{{ tag.url }}" class="page-btn" style="font-size: 0.85em;">
+                #{{ tag.display }} ({{ tag.count }})
+            </a>
+        {% endfor %}
+        </div>
+    </div>
 </body>
     """,
 )
@@ -258,6 +306,7 @@ class EntryType(enum.Enum):
     directory = 0
     post = 1
     reply = 2
+    tag_ref = 3
 
 
 class BuildCache:
@@ -355,6 +404,25 @@ class BuildCache:
             ]
         )
 
+        # ── Tag page tables ──
+        create_tag_page_deps = ' '.join(
+            [
+                'CREATE TABLE IF NOT EXISTS tag_page_deps (',
+                'tag_value TEXT,',
+                'target_path TEXT,',
+                'source_file TEXT,',
+                'post_path TEXT,',
+                'timestamp TEXT,',
+                'UNIQUE(tag_value, source_file) ON CONFLICT REPLACE)',
+            ]
+        )
+        create_tag_page_deps_index = ' '.join(
+            [
+                'CREATE INDEX IF NOT EXISTS tag_page_deps_tag ON',
+                'tag_page_deps (tag_value, target_path)',
+            ]
+        )
+
         init = ';'.join(
             [
                 create_page_dependencies,
@@ -371,6 +439,8 @@ class BuildCache:
                 create_pending_path,
                 create_last_build_lookup,
                 create_dependency_target_nonnull,
+                create_tag_page_deps,
+                create_tag_page_deps_index,
             ]
         )
 
@@ -496,6 +566,89 @@ class BuildCache:
                 'DELETE FROM pending_changes WHERE EXISTS (',
                 '  SELECT 1 FROM page_dependencies WHERE',
                 '  page_dependencies.source_file = pending_changes.path)',
+                'OR EXISTS (',
+                '  SELECT 1 FROM tag_page_deps WHERE',
+                '  tag_page_deps.source_file = pending_changes.path)',
+            ]
+        )
+
+        # ── Tag queries ──
+
+        # Insert a new tag ref (called from Python with parsed values)
+        insert_tag_ref = ' '.join(
+            [
+                'INSERT OR IGNORE INTO tag_page_deps',
+                '(tag_value, target_path, source_file, post_path, timestamp)',
+                'VALUES (?, NULL, ?, NULL, ?)',
+            ]
+        )
+
+        # Select unpaged tag refs grouped by tag
+        select_tag_unpaged = ' '.join(
+            [
+                'SELECT ROWID, tag_value, source_file, timestamp',
+                'FROM tag_page_deps WHERE target_path IS NULL',
+                'ORDER BY tag_value, timestamp',
+            ]
+        )
+
+        update_tag_repage = (
+            'UPDATE tag_page_deps SET target_path = ?, post_path = ?'
+            ' WHERE ROWID = ?'
+        )
+
+        # Count existing entries on a tag's latest page
+        select_tag_latest_count = ' '.join(
+            [
+                'SELECT COUNT(*) FROM tag_page_deps',
+                "WHERE tag_value = ? AND target_path LIKE '%/latest.html'",
+            ]
+        )
+
+        # Get all pending tag pages (tags with changed content)
+        select_pending_tag_pages = ' '.join(
+            [
+                'SELECT DISTINCT tag_page_deps.tag_value,',
+                'tag_page_deps.target_path',
+                'FROM tag_page_deps',
+                'INNER JOIN pending_changes ON',
+                'tag_page_deps.source_file = pending_changes.path',
+                'WHERE tag_page_deps.target_path IS NOT NULL',
+            ]
+        )
+
+        # Get source files for a specific tag page
+        select_tag_page_sources = ' '.join(
+            [
+                'SELECT source_file, post_path FROM tag_page_deps',
+                'WHERE tag_value = ? AND target_path = ?',
+                'ORDER BY timestamp DESC',
+            ]
+        )
+
+        # Freeze: rename latest → permanent page
+        update_tag_freeze_page = ' '.join(
+            [
+                'UPDATE tag_page_deps SET target_path = ?',
+                'WHERE tag_value = ? AND target_path = ?',
+            ]
+        )
+
+        # Previous tag page (for pagination links)
+        select_tag_prev_page = ' '.join(
+            [
+                'SELECT target_path FROM tag_page_deps',
+                'WHERE tag_value = ? AND target_path < ?',
+                'AND target_path IS NOT NULL',
+                'ORDER BY target_path DESC LIMIT 1',
+            ]
+        )
+
+        # All distinct tags (for tag index)
+        select_all_tags = ' '.join(
+            [
+                'SELECT tag_value, COUNT(*) AS cnt',
+                'FROM tag_page_deps GROUP BY tag_value ORDER BY tag_value',
             ]
         )
 
@@ -569,7 +722,99 @@ class BuildCache:
 
         self.connection.commit()
 
+    def repage_tags(self, pagination=10):
+        """Paginate tag references.  Mirrors ``repage()`` but per-tag."""
+        # 1. Insert pending tag_ref entries into tag_page_deps (unpaged)
+        pending = list(
+            self.connection.execute(
+                'SELECT path, timestamp FROM pending_changes'
+                f' WHERE entry_type = {EntryType.tag_ref.value}'
+            )
+        )
+        for path, timestamp in pending:
+            # path = "tags/hashtag/{value}/ref.{id}.cbor"
+            parts = path.split('/')
+            if len(parts) < 4 or parts[0] != 'tags':
+                continue
+            tag_value = parts[2]
+            self.connection.execute(
+                self.Queries.insert_tag_ref, (tag_value, path, timestamp)
+            )
+
+        # 2. For each tag, resolve post_path from the ref CBOR
+        unpaged = list(
+            self.connection.execute(self.Queries.select_tag_unpaged)
+        )
+        for rowid, tag_value, source_file, timestamp in unpaged:
+            ref_path = os.path.join(self.root, source_file)
+            try:
+                with open(ref_path, 'rb') as f:
+                    ref = cbor2.load(f)
+                post_path = ref.get('post_path', '')
+            except (FileNotFoundError, OSError):
+                post_path = ''
+
+            # Check how many items are on this tag's latest page
+            latest_target = os.path.join(
+                self.subdir, 'tags', tag_value, 'latest.html'
+            )
+            (count,) = self.connection.execute(
+                self.Queries.select_tag_latest_count, (tag_value,)
+            ).fetchone()
+
+            if count >= pagination:
+                # Freeze the current latest page
+                frozen_name = os.path.join(
+                    self.subdir, 'tags', tag_value,
+                    'page.{}.html'.format(timestamp),
+                )
+                self.connection.execute(
+                    self.Queries.update_tag_freeze_page,
+                    (frozen_name, tag_value, latest_target),
+                )
+
+            self.connection.execute(
+                self.Queries.update_tag_repage,
+                (latest_target, post_path, rowid),
+            )
+
+        self.connection.commit()
+
+    def get_pending_tag_pages(self):
+        """Return tag pages that need re-rendering.
+
+        Returns ``{target_path: {tag_value, files: [(ref_file, post_path)],
+        previous_page?}}``.
+        """
+        rows = list(
+            self.connection.execute(self.Queries.select_pending_tag_pages)
+        )
+        groups = {}
+        for tag_value, target_path in rows:
+            if target_path in groups:
+                continue
+            desc = groups[target_path] = {'tag_value': tag_value, 'files': []}
+            for source, post_path in self.connection.execute(
+                self.Queries.select_tag_page_sources,
+                (tag_value, target_path),
+            ):
+                desc['files'].append((source, post_path))
+
+            # Pagination link
+            for (prev,) in self.connection.execute(
+                self.Queries.select_tag_prev_page,
+                (tag_value, target_path),
+            ):
+                desc['previous_page'] = prev
+
+        return groups
+
+    def get_all_tags(self):
+        """Return list of (tag_value, count) for the tag index page."""
+        return list(self.connection.execute(self.Queries.select_all_tags))
+
     def get_pending_pages(self):
+        """Return pages that need re-rendering."""
         prev_query = self.Queries.select_prev_page
         next_query = self.Queries.select_next_page
 
@@ -654,13 +899,14 @@ class _BuildWalker(IndexWalker):
     def on_entry(self, dirpath, entry, hashval):
         reldir = os.path.relpath(dirpath, self.cache.root)
         relpath = os.path.join(reldir, entry['filename'])
+        entry_type_name = 'tag_ref' if entry['type'] == 'ref' else entry['type']
         self.cursor.execute(
             BuildCache.Queries.insert_stale_check,
             (
                 relpath,
                 hashval,
                 self.hash_name,
-                EntryType[entry['type']].value,
+                EntryType[entry_type_name].value,
                 entry['timestamp'],
             ),
         )
@@ -817,6 +1063,124 @@ def _load_repo_config(root):
     raise FileNotFoundError('No config found')
 
 
+def render_tag_pages(cache, templates, text_config, change_log=None):
+    """Render only the tag pages that have new content.
+
+    Uses ``cache.repage_tags()`` for O(1)-per-post pagination and
+    ``cache.get_pending_tag_pages()`` to re-render only changed pages.
+    """
+    from .tags import display_tag
+
+    root = cache.root
+    html_dir = cache.subdir
+
+    tag_pages = cache.get_pending_tag_pages()
+
+    for target_path, desc in tag_pages.items():
+        tag_value = desc['tag_value']
+        entries = []
+        for _ref_file, post_path in desc['files']:
+            if not post_path:
+                continue
+            try:
+                with open(os.path.join(root, post_path), 'rb') as f:
+                    entries.append(cbor2.load(f))
+            except (FileNotFoundError, OSError):
+                continue
+
+        if not entries:
+            continue
+
+        posts = [e['content'] for e in entries]
+        posts.sort(key=lambda p: p.get('time', ''), reverse=True)
+
+        target = os.path.join(root, target_path)
+        dirname = os.path.dirname(target)
+        os.makedirs(dirname, exist_ok=True)
+
+        description = {}
+        if 'previous_page' in desc:
+            description['previous_page'] = os.path.relpath(
+                os.path.join(root, desc['previous_page']), dirname
+            )
+
+        template_args = dict(
+            entries=entries,
+            posts=posts,
+            tag_name=display_tag(tag_value),
+            tag_value=tag_value,
+            root_path=os.path.relpath(root, dirname),
+            text_config=text_config,
+            **description,
+        )
+
+        with open(target, 'w') as f:
+            f.write(templates['post'].render(**template_args))
+        if change_log is not None:
+            change_log.write('{}\n'.format(os.path.relpath(target, root)))
+
+    # Re-render tag index if any tag pages changed
+    all_tags = cache.get_all_tags()
+    if all_tags and tag_pages:
+        tag_summaries = [
+            dict(
+                value=tv,
+                display=display_tag(tv),
+                count=cnt,
+                url='tags/{}/latest.html'.format(tv),
+            )
+            for tv, cnt in all_tags
+        ]
+        tag_index_file = os.path.join(root, html_dir, 'tags', 'index.html')
+        os.makedirs(os.path.dirname(tag_index_file), exist_ok=True)
+        template_args = dict(
+            tags=tag_summaries,
+            root_path=os.path.relpath(
+                root, os.path.dirname(tag_index_file)
+            ),
+            text_config=text_config,
+        )
+        with open(tag_index_file, 'w') as f:
+            f.write(templates['tag_index'].render(**template_args))
+        if change_log is not None:
+            change_log.write(
+                '{}\n'.format(os.path.relpath(tag_index_file, root))
+            )
+
+
+def generate_pwa_manifest(root):
+    """Scan the source tree and write ``pwa-manifest.json``.
+
+    The manifest maps virtual Pyodide FS paths to fetch URLs (relative to
+    ``pwa/``).  ``pyodide-loader.js`` reads this manifest so that adding
+    new Python modules, templates, or static assets never requires
+    updating a hardcoded list.
+    """
+    import json
+
+    files = {}
+
+    # Python package — every .py under coulomb/
+    pkg_dir = os.path.join(root, 'coulomb')
+    if os.path.isdir(pkg_dir):
+        for fname in sorted(os.listdir(pkg_dir)):
+            if fname.endswith('.py'):
+                files['/coulomb/coulomb/' + fname] = '../coulomb/' + fname
+
+    # Templates
+    tpl_dir = os.path.join(root, 'template')
+    if os.path.isdir(tpl_dir):
+        for dirpath, _dirs, fnames in os.walk(tpl_dir):
+            for fname in sorted(fnames):
+                full = os.path.join(dirpath, fname)
+                rel = os.path.relpath(full, root)
+                files['/coulomb/' + rel] = '../' + rel
+
+    manifest_path = os.path.join(root, 'pwa-manifest.json')
+    with open(manifest_path, 'w') as f:
+        json.dump(files, f, indent=2, sort_keys=True)
+
+
 def main(
     root,
     cache_file,
@@ -829,6 +1193,9 @@ def main(
 ):
     env = jinja2.Environment()
     env.filters['identicon'] = identicon_data_uri
+    env.filters['markdown'] = lambda text: Markup(render_markdown(text))
+    env.filters['display_tag'] = lambda v: v.replace('-', ' ')
+    env.globals['html_dir'] = html_dir
     templates = {}
     if template_dir:
         with open(os.path.join(template_dir, 'post.jinja'), 'r') as f:
@@ -845,7 +1212,13 @@ def main(
     cache = BuildCache(root, cache_file, hash_name, html_dir)
     for post_dir in post_dirs:
         cache.stale_check(os.path.join(root, post_dir))
+    # Walk tags tree if it exists
+    tags_dir = os.path.join(root, 'tags')
+    if os.path.isdir(tags_dir):
+        cache.stale_check(tags_dir)
+
     cache.repage()
+    cache.repage_tags()
     file_groups = cache.get_pending_pages()
 
     with contextlib.ExitStack() as stack:
@@ -857,6 +1230,8 @@ def main(
                 templates, root, target_html, description, change_log, text_config
             )
 
+        render_tag_pages(cache, templates, text_config, change_log)
+
     cache.update_built_files()
 
     if pwa_dir and os.path.isdir(pwa_dir):
@@ -864,6 +1239,7 @@ def main(
         if os.path.exists(dst):
             shutil.rmtree(dst)
         shutil.copytree(pwa_dir, dst)
+    generate_pwa_manifest(root)
 
 
 if __name__ == '__main__':

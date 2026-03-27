@@ -68,15 +68,52 @@ export function renderFeed(container, posts, { onReply, onVerify, onOpenFile } =
     return;
   }
 
-  const tree = buildThreadTree(posts);
-  const frag = document.createDocumentFragment();
-  for (const post of tree) {
-    frag.appendChild(renderPostNode(post, 0, onReply, onVerify, onOpenFile));
+  let activeTag = null;
+
+  function rebuildFeed() {
+    // Remove previous posts and any filter banner
+    container.querySelectorAll('.feed-post, .feed-empty, .feed-tag-banner').forEach(el => el.remove());
+
+    const filtered = activeTag
+      ? posts.filter(p => (p.tags || []).some(t => t.value === activeTag))
+      : posts;
+
+    // Show active filter banner with clear button
+    if (activeTag) {
+      const banner = document.createElement('div');
+      banner.className = 'feed-tag-banner';
+      banner.innerHTML = `Filtering by <span class="feed-tag">#${escapeHtml(activeTag.replace(/-/g, ' '))}</span> `;
+      const clear = document.createElement('button');
+      clear.className = 'feed-tag-clear';
+      clear.textContent = '✕ Clear';
+      clear.addEventListener('click', () => { activeTag = null; rebuildFeed(); });
+      banner.appendChild(clear);
+      container.appendChild(banner);
+    }
+
+    if (filtered.length === 0) {
+      const msg = document.createElement('p');
+      msg.className = 'feed-empty';
+      msg.textContent = `No posts tagged #${(activeTag || '').replace(/-/g, ' ')}`;
+      container.appendChild(msg);
+      return;
+    }
+
+    const tree = buildThreadTree(filtered);
+    const frag = document.createDocumentFragment();
+    for (const post of tree) {
+      frag.appendChild(renderPostNode(post, 0, onReply, onVerify, onOpenFile, (tag) => {
+        activeTag = activeTag === tag ? null : tag;
+        rebuildFeed();
+      }));
+    }
+    container.appendChild(frag);
   }
-  container.appendChild(frag);
+
+  rebuildFeed();
 }
 
-function renderPostNode(post, depth, onReply, onVerify, onOpenFile) {
+function renderPostNode(post, depth, onReply, onVerify, onOpenFile, onTagClick) {
   const el = document.createElement('div');
   el.className = 'feed-post';
   if (depth > 0) el.classList.add('feed-reply');
@@ -104,7 +141,8 @@ function renderPostNode(post, depth, onReply, onVerify, onOpenFile) {
       </div>
     </div>
     ${replyToHtml}
-    <div class="feed-text">${escapeHtml(post.text)}</div>
+    <div class="feed-text md-content">${post.text_html || escapeHtml(post.text)}</div>
+    ${renderTagBadges(post.tags)}
     <div class="feed-attachments"></div>
     <div class="feed-actions">
       <button class="feed-reply-btn" title="Reply">↩ Reply</button>
@@ -176,9 +214,19 @@ function renderPostNode(post, depth, onReply, onVerify, onOpenFile) {
     verifyBtn.addEventListener('click', () => onVerify(post, verifyBtn, statusSpan));
   }
 
+  if (onTagClick) {
+    el.querySelectorAll('.feed-tag').forEach(span => {
+      span.style.cursor = 'pointer';
+      span.addEventListener('click', () => {
+        const tag = span.dataset.tag;
+        if (tag) onTagClick(tag);
+      });
+    });
+  }
+
   // Render children (replies)
   for (const child of post.children || []) {
-    el.appendChild(renderPostNode(child, depth + 1, onReply, onVerify, onOpenFile));
+    el.appendChild(renderPostNode(child, depth + 1, onReply, onVerify, onOpenFile, onTagClick));
   }
 
   return el;
@@ -219,4 +267,14 @@ function escapeHtml(text) {
   const el = document.createElement('span');
   el.textContent = text;
   return el.innerHTML;
+}
+
+function renderTagBadges(tags) {
+  if (!tags || tags.length === 0) return '';
+  const badges = tags.map(t => {
+    const v = t.value || '';
+    const display = v.replace(/-/g, ' ');
+    return `<span class="feed-tag" data-tag="${escapeHtml(v)}">#${escapeHtml(display)}</span>`;
+  }).join(' ');
+  return `<div class="feed-tags">${badges}</div>`;
 }

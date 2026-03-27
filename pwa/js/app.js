@@ -1126,6 +1126,23 @@ async function handleImport(e) {
 
 // ── Device Provisioning (ephemeral key exchange) ──
 
+// Emoji fingerprint for visual MITM verification.
+// Both devices derive the same pattern from the ephemeral public key.
+const EMOJI_ALPHABET = [
+  '🐶','🐱','🐭','🐹','🐰','🦊','🐻','🐼',
+  '🐨','🐯','🦁','🐮','🐷','🐸','🐵','🐔',
+  '🐧','🐦','🦅','🦆','🦉','🐴','🦄','🐝',
+  '🐛','🦋','🐌','🐞','🐙','🦀','🐠','🐳',
+];
+
+async function emojiFingerprint(base64Pub) {
+  const raw = atob(base64Pub.replace(/-/g, '+').replace(/_/g, '/'));
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return Array.from(hash.slice(0, 4), b => EMOJI_ALPHABET[b % EMOJI_ALPHABET.length]).join('');
+}
+
 // Step 1: New device generates ephemeral X25519 keypair, shows public key as QR/URL
 async function handleRequestKey() {
   const statusEl = document.getElementById('request-status');
@@ -1151,8 +1168,9 @@ _bridge_out = json.dumps({
 
     const data = JSON.parse(result);
 
-    // Store ephemeral private key in sessionStorage for step 3
+    // Store ephemeral keys in sessionStorage for step 3
     sessionStorage.setItem('coulomb-provision-ephemeral', data.priv);
+    sessionStorage.setItem('coulomb-provision-ephemeral-pub', data.pub);
 
     const requestUrl = `${location.origin}${location.pathname}#provision/request/${data.pub}`;
 
@@ -1174,7 +1192,8 @@ _bridge_out = json.dumps({
       showStatus(statusEl, 'Link copied!', 'success');
     });
 
-    showStatus(statusEl, 'Waiting for source device…', 'success');
+    const emoji = await emojiFingerprint(data.pub);
+    showStatus(statusEl, `Verification pattern: <span class="emoji-fingerprint">${emoji}</span> — confirm this matches on the source device`, 'success', { timeout: 0 });
   } catch (e) {
     showStatus(statusEl, `Error: ${e.message}`, 'error');
   }
@@ -1228,6 +1247,8 @@ if not identity_files:
     raise RuntimeError("No identity found. Initialize first.")
 
 with open(identity_files[0], 'rb') as f:
+    identity_cbor = f.read()
+    f.seek(0)
     entry = cbor2.load(f)
 author_id = entry['content']['author']['id']
 
@@ -1242,9 +1263,16 @@ with open('${getWorkspacePath()}/changelog', 'a') as _cl:
         key_files=[key_path]
     )
 
-# Encrypt seed using NaCl SealedBox (anonymous encryption to target's public key)
+# Re-read identity after adding the new key
+with open(identity_files[0], 'rb') as f:
+    identity_cbor = f.read()
+
+# Bundle seed + public identity into a CBOR payload
+bundle = cbor2.dumps({'seed': seed, 'identity': identity_cbor, 'author_id': author_id})
+
+# Encrypt using NaCl SealedBox (anonymous encryption to target's public key)
 sealed_box = nacl.public.SealedBox(target_pub)
-encrypted = sealed_box.encrypt(seed)
+encrypted = sealed_box.encrypt(bundle)
 
 payload = base64.urlsafe_b64encode(encrypted).decode()
 
@@ -1260,6 +1288,7 @@ _bridge_out = json.dumps({
     const responseUrl = `${location.origin}${location.pathname}#provision/respond/${data.payload}`;
 
     resultEl.classList.remove('hidden');
+
     try {
       const qrSvg = await generateQRCodeSVG(responseUrl);
       document.getElementById('provision-qr').innerHTML =
@@ -1277,7 +1306,8 @@ _bridge_out = json.dumps({
       showStatus(statusEl, 'Link copied!', 'success');
     });
 
-    showStatus(statusEl, `Key ${data.key_id.slice(0, 12)}… created. Transfer to new device.`, 'success');
+    const emoji = await emojiFingerprint(ephemeralPub);
+    showStatus(statusEl, `Verification pattern: <span class="emoji-fingerprint">${emoji}</span> — confirm this matches on the new device. Key ${data.key_id.slice(0, 12)}… created.`, 'success', { timeout: 0 });
   } catch (e) {
     showStatus(statusEl, `Error: ${e.message}`, 'error');
   }
@@ -1312,7 +1342,7 @@ async function handleProvisionReceive(payloadOverride) {
   try {
     showStatus(statusEl, 'Decrypting key…', 'success');
 
-    await runPy(`
+    const result = await runPy(`
 import base64, json, os
 import nacl.public, nacl.signing, cbor2
 
@@ -1323,7 +1353,18 @@ ephemeral_priv = nacl.public.PrivateKey(ephemeral_priv_bytes)
 # Decrypt sealed box
 encrypted = base64.urlsafe_b64decode(${JSON.stringify(payload)})
 unseal = nacl.public.SealedBox(ephemeral_priv)
-seed = unseal.decrypt(encrypted)
+decrypted = unseal.decrypt(encrypted)
+
+# Try new bundle format (CBOR with seed + identity), fall back to raw seed
+try:
+    bundle = cbor2.loads(decrypted)
+    seed = bundle['seed']
+    identity_cbor = bundle.get('identity')
+    author_id = bundle.get('author_id')
+except Exception:
+    seed = decrypted
+    identity_cbor = None
+    author_id = None
 
 # Reconstruct signing key
 key = nacl.signing.SigningKey(seed)
@@ -1336,14 +1377,55 @@ key_path = '${getWorkspacePath()}/private/signing.' + key_id + '.cbor'
 with open(key_path, 'wb') as f:
     cbor2.dump(private_key, f, canonical=True)
 
-_bridge_out = json.dumps({'key_id': key_id})
+# Write identity CBOR if included in bundle
+_has_identity = False
+if identity_cbor and author_id:
+    identity_dir = '${getWorkspacePath()}/public/identity/' + author_id
+    os.makedirs(identity_dir, exist_ok=True)
+
+    # Write latest.cbor
+    latest_path = os.path.join(identity_dir, 'latest.cbor')
+    with open(latest_path, 'wb') as f:
+        f.write(identity_cbor)
+
+    # Write versioned identity file (same as write_updated_identity)
+    from coulomb.TimeArchive import IdentityArchive
+    archive = IdentityArchive(prefix=identity_dir)
+    versioned_path = os.path.join(identity_dir, archive.get_path().path)
+    os.makedirs(os.path.dirname(versioned_path), exist_ok=True)
+    with open(versioned_path, 'wb') as f:
+        f.write(identity_cbor)
+
+    # Log both to changelog
+    public_dir = '${getWorkspacePath()}/public'
+    changelog_path = '${getWorkspacePath()}/changelog'
+    with open(changelog_path, 'a') as cl:
+        cl.write(os.path.relpath(latest_path, public_dir) + '\\n')
+        cl.write(os.path.relpath(versioned_path, public_dir) + '\\n')
+
+    _has_identity = True
+
+_bridge_out = json.dumps({'key_id': key_id, 'has_identity': _has_identity})
 `);
 
+    const data = JSON.parse(result);
     await saveToIDB(getPyodide(), getWorkspacePath());
+    const ephemeralPub = sessionStorage.getItem('coulomb-provision-ephemeral-pub');
     sessionStorage.removeItem('coulomb-provision-ephemeral');
+    sessionStorage.removeItem('coulomb-provision-ephemeral-pub');
     location.hash = '';
 
-    showStatus(statusEl, 'Key imported successfully! You can now sign posts.', 'success');
+    const emoji = ephemeralPub ? await emojiFingerprint(ephemeralPub) : '';
+    const emojiHtml = emoji ? ` Verification: <span class="emoji-fingerprint">${emoji}</span>` : '';
+
+    if (data.has_identity) {
+      showStatus(statusEl, `Key and identity imported!${emojiHtml}`, 'success', { timeout: 0 });
+      await refreshSidebar();
+      showView('identity');
+      await refreshIdentity();
+    } else {
+      showStatus(statusEl, `Key imported. Set up a pull source to sync your identity.${emojiHtml}`, 'success', { timeout: 0 });
+    }
   } catch (e) {
     showStatus(statusEl, `Import failed: ${e.message}`, 'error');
   }
@@ -1392,11 +1474,11 @@ async function runPy(code) {
 }
 
 // ── Helpers ──
-function showStatus(el, msg, type) {
-  el.textContent = msg;
+function showStatus(el, msg, type, { timeout = 5000 } = {}) {
+  el.innerHTML = msg;
   el.className = `status-msg ${type}`;
   el.classList.remove('hidden');
-  setTimeout(() => el.classList.add('hidden'), 5000);
+  if (timeout > 0) setTimeout(() => el.classList.add('hidden'), timeout);
 }
 
 function escapeHtml(text) {
