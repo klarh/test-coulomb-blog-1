@@ -657,7 +657,47 @@ label {
   margin-bottom: 0.4rem;
 }
 
-.feed-files {
+.feed-attachments {
+  margin-top: 0.25rem;
+}
+
+.feed-file {
+  margin: 0.25rem 0;
+}
+
+.feed-image-placeholder {
+  font-size: 0.8rem;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  background: var(--surface);
+  border-radius: var(--radius);
+  display: inline-block;
+}
+
+.feed-image-placeholder .load-hint {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.feed-image {
+  max-width: 100%;
+  max-height: 400px;
+  border-radius: var(--radius);
+  display: block;
+}
+
+.feed-file-link {
+  font-size: 0.8rem;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.feed-file-link:hover {
+  text-decoration: underline;
+}
+
+.feed-file-name {
   font-size: 0.8rem;
   color: var(--text-muted);
 }
@@ -687,6 +727,31 @@ label {
   background: var(--surface-2);
   color: var(--accent);
 }
+
+.feed-verify-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+  padding: 0.2rem 0.5rem;
+  border-radius: var(--radius);
+}
+
+.feed-verify-btn:hover {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+
+.feed-verify-btn.verified { color: #4caf50; cursor: default; }
+.feed-verify-btn.failed { color: var(--accent); cursor: default; }
+
+.feed-verify-status {
+  font-size: 0.75rem;
+  margin-left: 0.25rem;
+}
+.feed-verify-status.valid { color: #4caf50; }
+.feed-verify-status.invalid { color: var(--accent); }
 
 /* Sidebar (CSS-only toggle) */
 .sr-only {

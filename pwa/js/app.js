@@ -5,7 +5,7 @@ import {
   setDisplayName, setAvatarUrl, setIdentityConfig,
   addLocation, removeLocation,
   createPost, listRecentPosts, getPendingFiles, getAllPublicFiles,
-  readWorkspaceFile, renderSite,
+  readWorkspaceFile, renderSite, verifyPost,
   getSiteConfig, setSiteConfig, generateQRCodeSVG,
   getActiveAccount, getWorkspacePath, listAccounts, createAccount, switchAccount, deleteAccount,
   getAccountProfiles, updateAccountProfile,
@@ -107,12 +107,29 @@ for item in os.listdir(old):
     loadAndApplyTheme();
 
     document.getElementById('loading-screen').classList.add('hidden');
-    showView('feed');
+
+    // Check for key import via URL fragment (before routing)
+    const isProvision = await checkKeyImport();
+
+    // Restore view and account from URL hash
+    if (!isProvision) {
+      const { account, view } = parseHash(location.hash);
+      if (account && account !== getActiveAccount()) {
+        const accounts = await listAccounts();
+        if (accounts.includes(account)) {
+          await switchAccount(account);
+          await restoreFromIDB(getPyodide(), getWorkspacePath());
+          backend.setAccountScope(account);
+          backend.tryRestore();
+          loadAndApplyTheme();
+        }
+      }
+      showView(view || 'feed', { updateHash: false });
+    } else {
+      showView('sync', { updateHash: false });
+    }
+
     bindEvents();
-
-    // Check for key import via URL fragment
-    await checkKeyImport();
-
     await refreshSidebar();
     await refreshCurrentView();
   } catch (e) {
@@ -122,16 +139,57 @@ for item in os.listdir(old):
 }
 
 // ── Navigation ──
-function showView(name) {
+const VALID_VIEWS = ['feed', 'identity', 'sync'];
+
+function showView(name, { updateHash = true } = {}) {
   document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById(`view-${name}`).classList.remove('hidden');
   document.getElementById(`nav-${name}`).classList.add('active');
   currentView = name;
+  if (updateHash) {
+    const account = getActiveAccount();
+    const hashView = name === 'feed' ? '' : name;
+    const hashAccount = account === 'default' ? '' : account;
+    const parts = [hashAccount, hashView].filter(Boolean);
+    const newHash = parts.length ? '#' + parts.join('/') : '';
+    if (location.hash !== newHash) history.replaceState(null, '', newHash || location.pathname);
+  }
+}
+
+function parseHash(hash) {
+  if (!hash || hash === '#') return { account: null, view: null };
+  const parts = hash.slice(1).split('/');
+  // Provisioning hashes are handled separately
+  if (parts[0] === 'provision' || parts[0] === 'import') return { account: null, view: null, provision: true };
+  // Determine if first segment is a view or an account name
+  if (VALID_VIEWS.includes(parts[0])) return { account: null, view: parts[0] };
+  // First segment is account, second (if any) is view
+  const account = parts[0] || null;
+  const view = parts[1] && VALID_VIEWS.includes(parts[1]) ? parts[1] : null;
+  return { account, view };
 }
 
 // ── Event Binding ──
 function bindEvents() {
+  // Hash-based routing
+  window.addEventListener('hashchange', async () => {
+    const { account, view, provision } = parseHash(location.hash);
+    if (provision) return; // provisioning hashes handled elsewhere
+    if (account && account !== getActiveAccount()) {
+      const accounts = await listAccounts();
+      if (accounts.includes(account)) {
+        await handleSwitchAccount(account);
+        return; // handleSwitchAccount calls showView
+      }
+    }
+    const targetView = view || 'feed';
+    if (targetView !== currentView) {
+      showView(targetView, { updateHash: false });
+      await refreshCurrentView();
+    }
+  });
+
   // Navigation
   document.getElementById('nav-feed').addEventListener('click', async () => {
     closeSidebar(); showView('feed'); await refreshFeed();
@@ -161,6 +219,11 @@ function bindEvents() {
   document.getElementById('btn-github-connect').addEventListener('click', handleGitHubConnect);
   document.getElementById('btn-github-disconnect').addEventListener('click', handleGitHubDisconnect);
   document.getElementById('btn-publish').addEventListener('click', handlePublish);
+  const pwaCheckbox = document.getElementById('publish-include-pwa');
+  pwaCheckbox.checked = localStorage.getItem('coulomb_bundle_pwa') === '1';
+  pwaCheckbox.addEventListener('change', () => {
+    localStorage.setItem('coulomb_bundle_pwa', pwaCheckbox.checked ? '1' : '0');
+  });
 
   // Accounts
   document.getElementById('btn-sidebar-create-account').addEventListener('click', handleCreateAccount);
@@ -255,6 +318,32 @@ async function refreshFeed() {
     const container = document.getElementById('feed-container');
     renderFeed(container, posts, {
       onReply: (post) => setReplyTarget(post),
+      onVerify: async (post, btn, statusEl) => {
+        btn.disabled = true;
+        btn.textContent = '⏳ Verifying…';
+        try {
+          const result = await verifyPost(post.path);
+          if (result.valid) {
+            btn.textContent = '✅ Valid';
+            btn.classList.add('verified');
+            statusEl.textContent = result.detail;
+            statusEl.className = 'feed-verify-status valid';
+          } else {
+            btn.textContent = '❌ Invalid';
+            btn.classList.add('failed');
+            statusEl.textContent = result.detail;
+            statusEl.className = 'feed-verify-status invalid';
+          }
+        } catch (e) {
+          btn.textContent = '❌ Error';
+          statusEl.textContent = e.message;
+          statusEl.className = 'feed-verify-status invalid';
+        }
+      },
+      onOpenFile: (post, filename) => {
+        if (!post.files_dir) return null;
+        return readWorkspaceFile(`${post.files_dir}/${filename}`);
+      },
     });
   } catch (e) {
     console.error('Failed to load feed:', e);
@@ -941,6 +1030,8 @@ async function handleSwitchAccount(name) {
       showView('identity');
       await refreshIdentity();
     } else {
+      // Re-set view to update hash with new account
+      showView(currentView);
       await refreshCurrentView();
     }
   } catch (e) {

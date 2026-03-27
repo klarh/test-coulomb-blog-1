@@ -1,4 +1,4 @@
-const CACHE_NAME = 'coulomb-v3';
+const CACHE_NAME = 'coulomb-v5';
 const PYODIDE_VERSION = '0.27.4';
 const PYODIDE_CDN = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
 
