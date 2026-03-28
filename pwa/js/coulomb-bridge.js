@@ -923,17 +923,16 @@ from pyodide.ffi import to_js
 
 class _BrowserPullCache(PullCache):
     def get(self, location):
-        from pyodide.http import open_url
-        # open_url is synchronous and returns text; we need bytes
-        # Use XMLHttpRequest synchronously for binary
         from js import XMLHttpRequest
         xhr = XMLHttpRequest.new()
         xhr.open('GET', location, False)
-        xhr.responseType = 'arraybuffer'
+        # Can't use responseType='arraybuffer' with sync XHR on main thread;
+        # use x-user-defined charset to preserve binary data as text
+        xhr.overrideMimeType('text/plain; charset=x-user-defined')
         xhr.send()
         if xhr.status != 200:
             raise IOError(f'HTTP {xhr.status} fetching {location}')
-        return bytes(xhr.response.to_py())
+        return bytes(ord(c) & 0xff for c in xhr.responseText)
 
 _cache = _BrowserPullCache(
     root=${JSON.stringify(public_)},
