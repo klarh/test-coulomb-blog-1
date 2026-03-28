@@ -1127,7 +1127,7 @@ def render_tag_pages(cache, templates, text_config, change_log=None):
                 value=tv,
                 display=display_tag(tv),
                 count=cnt,
-                url='tags/{}/latest.html'.format(tv),
+                url='{}/latest.html'.format(tv),
             )
             for tv, cnt in all_tags
         ]

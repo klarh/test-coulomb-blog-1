@@ -476,7 +476,7 @@ _bridge_out = render_markdown(${JSON.stringify(text)})
   return result || '';
 }
 
-export async function listRecentPosts(limit = 20) {
+export async function listRecentPosts(limit = 20, offset = 0) {
   const result = await runPy(`
 import os, glob, json
 os.chdir('${getWorkspace()}')
@@ -494,12 +494,13 @@ for _id_file in glob.glob('${getPublic()}/identity/*/latest.cbor'):
     except Exception:
         pass
 
-post_files = sorted(glob.glob('${getPublic()}/posts/**/*.cbor', recursive=True), reverse=True)[:${limit}]
+post_files = sorted(glob.glob('${getPublic()}/posts/**/*.cbor', recursive=True), reverse=True)
+post_files = [p for p in post_files if os.path.basename(p) != 'index.cbor']
+_total_count = len(post_files)
+post_files = post_files[${offset}:${offset + limit}]
 
 posts = []
 for pf in post_files:
-    if os.path.basename(pf) == 'index.cbor':
-        continue
     try:
         with open(pf, 'rb') as f:
             entry = cbor2.load(f)
@@ -535,7 +536,7 @@ for pf in post_files:
         pass
 
 posts.sort(key=lambda p: p['time'], reverse=True)
-_bridge_out = json.dumps(posts)
+_bridge_out = json.dumps({'posts': posts, 'total': _total_count})
 `);
   return JSON.parse(result);
 }
@@ -934,14 +935,16 @@ _bridge_out = str(_cache.imported_count)
 export async function pullAllSources() {
   const sources = loadSourcesStorage();
   let total = 0;
+  let failed = 0;
   for (const src of sources) {
     try {
       total += await pullFromSource(src.url);
     } catch (e) {
+      failed++;
       console.error(`Pull failed for ${src.url}:`, e);
     }
   }
-  return total;
+  return { count: total, failed };
 }
 
 export function listRenderedPages() {

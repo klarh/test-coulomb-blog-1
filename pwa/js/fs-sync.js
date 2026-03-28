@@ -76,15 +76,20 @@ export async function restoreFromIDB(pyodide, basePath = '/workspace') {
   return new Promise((resolve, reject) => {
     all.onsuccess = () => {
       const files = all.result.filter(f => f.path.startsWith(basePath));
+      let failCount = 0;
       for (const file of files) {
         try {
           ensureDir(pyodide, file.path.substring(0, file.path.lastIndexOf('/')));
           pyodide.FS.writeFile(file.path, new Uint8Array(file.data));
         } catch (e) {
+          failCount++;
           console.warn(`Failed to restore ${file.path}:`, e);
         }
       }
-      resolve(files.length);
+      if (failCount > 0) {
+        console.error(`${failCount}/${files.length} files failed to restore from IndexedDB`);
+      }
+      resolve({ total: files.length, failed: failCount });
     };
     all.onerror = () => reject(all.error);
   });

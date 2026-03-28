@@ -72,7 +72,7 @@ async function boot() {
     progress.value = 90;
     if (!localStorage.getItem('coulomb_migrated_workspace')) {
       const oldRestored = await restoreFromIDB(pyodide, '/workspace');
-      if (oldRestored > 0) {
+      if (oldRestored.total > 0) {
         await pyodide.runPythonAsync(`
 import os, shutil
 old = '/workspace'
@@ -87,15 +87,18 @@ for item in os.listdir(old):
             shutil.copy2(src, dst)
 `);
         await deleteFromIDB('/workspace');
-        console.log(`Migrated ${oldRestored} files from legacy /workspace`);
+        console.log(`Migrated ${oldRestored.total} files from legacy /workspace`);
       }
       localStorage.setItem('coulomb_migrated_workspace', '1');
     }
 
     progress.value = 95;
     const restored = await restoreFromIDB(pyodide, getWorkspacePath());
-    if (restored > 0) {
-      console.log(`Restored ${restored} files from IndexedDB`);
+    if (restored.total > 0) {
+      console.log(`Restored ${restored.total} files from IndexedDB`);
+      if (restored.failed > 0) {
+        console.warn(`${restored.failed} file(s) failed to restore`);
+      }
     }
 
     // Migrate any old global GitHub config to the active account
@@ -313,10 +316,11 @@ function cancelReply() {
 }
 
 async function refreshFeed() {
+  const PAGE_SIZE = 50;
   try {
-    const posts = await listRecentPosts(50);
+    const { posts, total } = await listRecentPosts(PAGE_SIZE, 0);
     const container = document.getElementById('feed-container');
-    renderFeed(container, posts, {
+    const feedOpts = {
       onReply: (post) => setReplyTarget(post),
       onVerify: async (post, btn, statusEl) => {
         btn.disabled = true;
@@ -344,7 +348,26 @@ async function refreshFeed() {
         if (!post.files_dir) return null;
         return readWorkspaceFile(`${post.files_dir}/${filename}`);
       },
-    });
+    };
+
+    let loadedCount = posts.length;
+    const onLoadMore = total > loadedCount ? async (btn) => {
+      btn.disabled = true;
+      btn.textContent = 'Loading…';
+      try {
+        const { posts: morePosts } = await listRecentPosts(PAGE_SIZE, loadedCount);
+        loadedCount += morePosts.length;
+        const hasMore = loadedCount < total;
+        renderFeed(container, posts.concat(morePosts), { ...feedOpts, hasMore: hasMore, onLoadMore: hasMore ? onLoadMore : null });
+        posts.push(...morePosts);
+      } catch (e) {
+        btn.textContent = 'Load more';
+        btn.disabled = false;
+        console.error('Failed to load more:', e);
+      }
+    } : null;
+
+    renderFeed(container, posts, { ...feedOpts, hasMore: total > loadedCount, onLoadMore });
   } catch (e) {
     console.error('Failed to load feed:', e);
   }
@@ -710,6 +733,21 @@ async function handlePublish() {
   document.getElementById('add-location-prompt')?.remove();
 
   try {
+    if (!navigator.onLine) {
+      showStatus(statusEl, 'You appear to be offline. Connect to the internet to publish.', 'error');
+      return;
+    }
+
+    // Pull remote changes before rendering to merge in posts from other devices
+    const sources = getPullSources();
+    if (sources.length > 0) {
+      showStatus(statusEl, 'Syncing remote changes…', 'success');
+      const pullResult = await pullAllSources();
+      if (pullResult.count > 0) {
+        await saveToIDB(getPyodide(), getWorkspacePath());
+      }
+    }
+
     // Render static site before publishing so pages are up to date
     const initialized = await isInitialized();
     if (initialized) {
@@ -765,6 +803,7 @@ async function handlePublish() {
             document.getElementById('btn-add-pages-location').addEventListener('click', async (e) => {
               e.target.disabled = true;
               await addLocation(pagesUrl);
+              addPullSource(pagesUrl, 'GitHub Pages');
               document.getElementById('add-location-prompt').textContent = '✓ Location added!';
               await saveToIDB((await import('./pyodide-loader.js')).getPyodide(), getWorkspacePath());
             });
@@ -810,6 +849,7 @@ async function refreshSync() {
           e.target.disabled = true;
           e.target.textContent = 'Adding…';
           await addLocation(pagesUrl);
+          addPullSource(pagesUrl, 'GitHub Pages');
           await saveToIDB(getPyodide(), getWorkspacePath());
           hintEl.innerHTML = '<p class="hint-banner">✓ Location added!</p>';
           setTimeout(() => hintEl.classList.add('hidden'), 3000);
@@ -913,12 +953,23 @@ async function handlePullOne(url) {
 async function handlePullAll() {
   const statusEl = document.getElementById('pull-status');
   const btn = document.getElementById('btn-pull-all');
+
+  if (!navigator.onLine) {
+    showStatus(statusEl, 'You appear to be offline.', 'error');
+    return;
+  }
+
   statusEl.textContent = 'Pulling all sources…';
   statusEl.classList.remove('hidden');
   btn.disabled = true;
   try {
-    const count = await pullAllSources();
-    statusEl.textContent = count > 0 ? `Pulled ${count} new item(s) total` : 'All sources up to date';
+    const result = await pullAllSources();
+    if (result.failed > 0) {
+      statusEl.textContent = `Pulled ${result.count} new item(s), ${result.failed} source(s) failed`;
+      statusEl.className = 'status-msg error';
+    } else {
+      statusEl.textContent = result.count > 0 ? `Pulled ${result.count} new item(s) total` : 'All sources up to date';
+    }
     await saveToIDB(pyodide, getWorkspacePath());
     renderSources();
   } catch (e) {
@@ -1189,7 +1240,7 @@ _bridge_out = json.dumps({
        <code class="provision-url" id="request-url">${escapeHtml(requestUrl)}</code>`;
     document.getElementById('request-url').addEventListener('click', () => {
       navigator.clipboard.writeText(requestUrl);
-      showStatus(statusEl, 'Link copied!', 'success');
+      showToast('Link copied!');
     });
 
     const emoji = await emojiFingerprint(data.pub);
@@ -1303,7 +1354,7 @@ _bridge_out = json.dumps({
        <code class="provision-url" id="provision-url">${escapeHtml(responseUrl)}</code>`;
     document.getElementById('provision-url').addEventListener('click', () => {
       navigator.clipboard.writeText(responseUrl);
-      showStatus(statusEl, 'Link copied!', 'success');
+      showToast('Link copied!');
     });
 
     const emoji = await emojiFingerprint(ephemeralPub);
@@ -1379,6 +1430,7 @@ with open(key_path, 'wb') as f:
 
 # Write identity CBOR if included in bundle
 _has_identity = False
+_locations = []
 if identity_cbor and author_id:
     identity_dir = '${getWorkspacePath()}/public/identity/' + author_id
     os.makedirs(identity_dir, exist_ok=True)
@@ -1387,6 +1439,11 @@ if identity_cbor and author_id:
     latest_path = os.path.join(identity_dir, 'latest.cbor')
     with open(latest_path, 'wb') as f:
         f.write(identity_cbor)
+
+    # Extract locations for pull source setup
+    _id_entry = cbor2.loads(identity_cbor)
+    _author = _id_entry.get('content', {}).get('author', {})
+    _locations = _author.get('locations', [])
 
     # Write versioned identity file (same as write_updated_identity)
     from coulomb.TimeArchive import IdentityArchive
@@ -1405,7 +1462,7 @@ if identity_cbor and author_id:
 
     _has_identity = True
 
-_bridge_out = json.dumps({'key_id': key_id, 'has_identity': _has_identity})
+_bridge_out = json.dumps({'key_id': key_id, 'has_identity': _has_identity, 'locations': _locations})
 `);
 
     const data = JSON.parse(result);
@@ -1419,8 +1476,26 @@ _bridge_out = json.dumps({'key_id': key_id, 'has_identity': _has_identity})
     const emojiHtml = emoji ? ` Verification: <span class="emoji-fingerprint">${emoji}</span>` : '';
 
     if (data.has_identity) {
-      showStatus(statusEl, `Key and identity imported!${emojiHtml}`, 'success', { timeout: 0 });
+      showStatus(statusEl, `Key and identity imported! Syncing posts…${emojiHtml}`, 'success', { timeout: 0 });
       await refreshSidebar();
+
+      // Auto-add identity locations as pull sources and sync post history
+      const locations = data.locations || [];
+      let pullCount = 0;
+      for (const loc of locations) {
+        try {
+          addPullSource(loc, 'Auto-added from identity');
+          const n = await pullFromSource(loc);
+          pullCount += n;
+        } catch (e) {
+          console.warn('Pull from', loc, 'failed:', e);
+        }
+      }
+      if (pullCount > 0) {
+        await saveToIDB(getPyodide(), getWorkspacePath());
+      }
+
+      showStatus(statusEl, `Identity imported! ${pullCount} post(s) synced.${emojiHtml}`, 'success', { timeout: 0 });
       showView('identity');
       await refreshIdentity();
     } else {
@@ -1437,9 +1512,11 @@ async function checkKeyImport() {
 
   if (hash.startsWith('#provision/respond/')) {
     const payload = hash.slice('#provision/respond/'.length);
+    // Clear sensitive payload from browser history immediately
+    history.replaceState(null, '', location.pathname);
     // Auto-fill step 3 input and attempt import if ephemeral key exists
     const input = document.getElementById('provision-response-input');
-    if (input) input.value = location.href;
+    if (input) input.value = payload;
     if (sessionStorage.getItem('coulomb-provision-ephemeral')) {
       await handleProvisionReceive(payload);
     }
@@ -1447,9 +1524,12 @@ async function checkKeyImport() {
   }
 
   if (hash.startsWith('#provision/request/')) {
+    // Clear sensitive payload from browser history immediately
+    const reqPayload = hash.slice('#provision/request/'.length);
+    history.replaceState(null, '', location.pathname);
     // Auto-fill step 2 input on source device
     const input = document.getElementById('provision-request-input');
-    if (input) input.value = location.href;
+    if (input) input.value = reqPayload;
     return true;
   }
 
@@ -1474,11 +1554,31 @@ async function runPy(code) {
 }
 
 // ── Helpers ──
-function showStatus(el, msg, type, { timeout = 5000 } = {}) {
-  el.innerHTML = msg;
+function showStatus(el, msg, type, { timeout = 5000, html = false } = {}) {
+  if (type === 'error' && !html) {
+    el.textContent = msg;
+  } else {
+    el.innerHTML = msg;
+  }
   el.className = `status-msg ${type}`;
   el.classList.remove('hidden');
   if (timeout > 0) setTimeout(() => el.classList.add('hidden'), timeout);
+}
+
+// Transient floating toast — doesn't clobber persistent status messages
+function showToast(msg, { type = 'success', timeout = 2500 } = {}) {
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  // Trigger entrance animation on next frame
+  requestAnimationFrame(() => toast.classList.add('toast-visible'));
+  setTimeout(() => {
+    toast.classList.remove('toast-visible');
+    toast.addEventListener('transitionend', () => toast.remove());
+    // Fallback removal if transitionend doesn't fire
+    setTimeout(() => toast.remove(), 500);
+  }, timeout);
 }
 
 function escapeHtml(text) {

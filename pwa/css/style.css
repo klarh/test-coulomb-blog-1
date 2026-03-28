@@ -600,6 +600,12 @@ label {
   padding: 2rem;
 }
 
+.feed-load-more {
+  display: block;
+  margin: 1rem auto;
+  padding: 0.5rem 1.5rem;
+}
+
 .feed-post {
   background: var(--surface);
   border-radius: var(--radius);
@@ -1181,3 +1187,28 @@ label {
 .source-actions {
   margin-top: 0.75rem;
 }
+
+/* ── Toast notifications (floating, non-intrusive) ── */
+.toast {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%) translateY(1rem);
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 0.6rem 1.2rem;
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+  opacity: 0;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  z-index: 10000;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--border);
+}
+.toast-visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+.toast-success { border-color: #2ecc71; }
+.toast-error   { border-color: var(--accent); }

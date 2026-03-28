@@ -61,7 +61,7 @@ export function buildThreadTree(posts) {
  * @param {Function} opts.onVerify - callback(post, btn, statusEl) when verify button clicked
  * @param {Function} opts.onOpenFile - callback(post, filename) → Uint8Array|null
  */
-export function renderFeed(container, posts, { onReply, onVerify, onOpenFile } = {}) {
+export function renderFeed(container, posts, { onReply, onVerify, onOpenFile, hasMore, onLoadMore } = {}) {
   container.innerHTML = '';
   if (posts.length === 0) {
     container.innerHTML = '<p class="feed-empty">No posts yet. Write your first post above!</p>';
@@ -72,7 +72,7 @@ export function renderFeed(container, posts, { onReply, onVerify, onOpenFile } =
 
   function rebuildFeed() {
     // Remove previous posts and any filter banner
-    container.querySelectorAll('.feed-post, .feed-empty, .feed-tag-banner').forEach(el => el.remove());
+    container.querySelectorAll('.feed-post, .feed-empty, .feed-tag-banner, .feed-load-more').forEach(el => el.remove());
 
     const filtered = activeTag
       ? posts.filter(p => (p.tags || []).some(t => t.value === activeTag))
@@ -108,6 +108,15 @@ export function renderFeed(container, posts, { onReply, onVerify, onOpenFile } =
       }));
     }
     container.appendChild(frag);
+
+    // "Load more" button when there are additional posts
+    if (hasMore && !activeTag && onLoadMore) {
+      const btn = document.createElement('button');
+      btn.className = 'feed-load-more secondary-btn';
+      btn.textContent = 'Load more';
+      btn.addEventListener('click', () => onLoadMore(btn));
+      container.appendChild(btn);
+    }
   }
 
   rebuildFeed();
