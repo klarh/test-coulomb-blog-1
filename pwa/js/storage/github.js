@@ -206,13 +206,16 @@ export class GitHubPagesBackend extends StorageBackend {
       const existingShas = await this.#getTreeShas(baseTreeSha);
 
       // 4. Filter to only changed files by comparing git blob SHAs
-      const changedFiles = [];
-      for (const file of files) {
-        const fullPath = this.#pathPrefix + file.path;
-        const localSha = await gitBlobSha(file.content);
-        if (existingShas.get(fullPath) === localSha) continue;
-        changedFiles.push(file);
-      }
+      const shaResults = await Promise.all(
+        files.map(async (file) => ({
+          file,
+          sha: await gitBlobSha(file.content),
+          fullPath: this.#pathPrefix + file.path,
+        }))
+      );
+      const changedFiles = shaResults
+        .filter(({ sha, fullPath }) => existingShas.get(fullPath) !== sha)
+        .map(({ file }) => file);
 
       if (changedFiles.length === 0) {
         return {
@@ -223,31 +226,35 @@ export class GitHubPagesBackend extends StorageBackend {
         };
       }
 
-      // 5. Create blobs only for changed files
+      // 5. Create blobs in parallel batches
+      const BATCH_SIZE = 10;
       const treeEntries = [];
-      for (const file of changedFiles) {
-        const blobResp = await this.#api(
-          `/repos/${this.#owner}/${this.#repo}/git/blobs`,
-          {
-            method: 'POST',
-            body: JSON.stringify({
-              content: uint8ToBase64(file.content),
-              encoding: 'base64',
-            }),
+      for (let i = 0; i < changedFiles.length; i += BATCH_SIZE) {
+        const batch = changedFiles.slice(i, i + BATCH_SIZE);
+        const batchResults = await Promise.all(batch.map(async (file) => {
+          const blobResp = await this.#api(
+            `/repos/${this.#owner}/${this.#repo}/git/blobs`,
+            {
+              method: 'POST',
+              body: JSON.stringify({
+                content: uint8ToBase64(file.content),
+                encoding: 'base64',
+              }),
+            }
+          );
+          if (!blobResp.ok) {
+            const err = await blobResp.json().catch(() => ({}));
+            throw new Error(`Failed to create blob for ${file.path}: ${err.message || blobResp.status}`);
           }
-        );
-        if (!blobResp.ok) {
-          const err = await blobResp.json().catch(() => ({}));
-          throw new Error(`Failed to create blob for ${file.path}: ${err.message || blobResp.status}`);
-        }
-        const blobData = await blobResp.json();
-
-        treeEntries.push({
-          path: this.#pathPrefix + file.path,
-          mode: '100644',
-          type: 'blob',
-          sha: blobData.sha,
-        });
+          const blobData = await blobResp.json();
+          return {
+            path: this.#pathPrefix + file.path,
+            mode: '100644',
+            type: 'blob',
+            sha: blobData.sha,
+          };
+        }));
+        treeEntries.push(...batchResults);
       }
 
       // 6. Create a new tree

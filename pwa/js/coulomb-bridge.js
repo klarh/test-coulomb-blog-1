@@ -792,10 +792,11 @@ if identity_files:
             pass
 
 from coulomb.rebuild_index import main as rebuild_index
+_changelog = '${getChangelog()}'
 rebuild_index(
     root=RENDER_ROOT,
     hashes=['sha512'],
-    changelog=None,
+    changelog=_changelog if os.path.exists(_changelog) else None,
     filter_=None,
 )
 
