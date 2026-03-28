@@ -793,7 +793,7 @@ async function handlePublish() {
         try {
           const info = await getIdentityInfo();
           if (info && !info.locations.some(loc => loc.startsWith(result.url))) {
-            const pagesUrl = result.url + 'public';
+            const pagesUrl = result.url.replace(/\/+$/, '');
             statusEl.insertAdjacentHTML('afterend',
               `<div id="add-location-prompt" class="status-msg" style="margin-top:0.5rem">
                 <span>Add <strong>${pagesUrl}</strong> as a published location?</span>
@@ -840,7 +840,7 @@ async function refreshSync() {
       const info = await getIdentityInfo();
       const pagesBase = backend.pagesUrl;
       if (info && info.locations && !info.locations.some(loc => loc.startsWith(pagesBase))) {
-        const pagesUrl = pagesBase + 'public';
+        const pagesUrl = pagesBase.replace(/\/+$/, '');
         hintEl.innerHTML =
           `<p class="hint-banner">⚠️ <strong>${escapeHtml(pagesUrl)}</strong> is not in your published locations.
            <button id="btn-add-pages-loc" class="link-btn">Add it</button></p>`;

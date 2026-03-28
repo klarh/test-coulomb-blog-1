@@ -258,7 +258,10 @@ export class GitHubPagesBackend extends StorageBackend {
           body: JSON.stringify({ base_tree: baseTreeSha, tree: treeEntries }),
         }
       );
-      if (!treeResp.ok) throw new Error('Failed to create tree');
+      if (!treeResp.ok) {
+        const err = await treeResp.json().catch(() => ({}));
+        throw new Error(`Failed to create tree: ${err.message || treeResp.status}`);
+      }
       const treeData = await treeResp.json();
 
       // 7. Create a new commit
