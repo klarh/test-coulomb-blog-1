@@ -118,7 +118,11 @@ class PullCache(IndexWalker):
     # IndexWalker interface
 
     def get_index(self, path):
-        index_bytes = self.get(urljoin(self._location, path, 'index.cbor'))
+        if path == '.':
+            url = urljoin(self._location, 'index.cbor')
+        else:
+            url = urljoin(self._location, path, 'index.cbor')
+        index_bytes = self.get(url)
         return load_index_bytes(index_bytes)
 
     def get_stored_hash(self, path):

@@ -842,6 +842,13 @@ for html_file in glob.glob(os.path.join(RENDER_ROOT, 'posts/**/*.html'), recursi
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     shutil.copy(html_file, dst)
 
+# Copy index.cbor files so other instances can pull/sync from this site
+for idx_file in glob.glob(os.path.join(RENDER_ROOT, '**/index.cbor'), recursive=True):
+    rel = os.path.relpath(idx_file, RENDER_ROOT)
+    dst = os.path.join('${getPublic()}', rel)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copy(idx_file, dst)
+
 # Create root index.html redirect to latest page
 _index = os.path.join('${getPublic()}', 'index.html')
 with open(_index, 'w') as f:
