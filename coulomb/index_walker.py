@@ -131,6 +131,9 @@ class IndexWalker:
     def _walk(self, dirpath):
         index = self.get_index(dirpath)
 
+        if index is None:
+            return  # Skip subtrees with missing/unreachable index
+
         stored = self.get_stored_hash(dirpath)
         current = index['self_hashes'][self.hash_name]
 
