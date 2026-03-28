@@ -3,7 +3,7 @@ import { saveToIDB, restoreFromIDB, deleteFromIDB, getChangelog, clearChangelog,
 import {
   ensureWorkspace, isInitialized, initialize, getIdentityInfo,
   setDisplayName, setAvatarUrl, setIdentityConfig,
-  addLocation, removeLocation,
+  addLocation, removeLocation, dedupLocations,
   createPost, listRecentPosts, getPendingFiles, getAllPublicFiles,
   readWorkspaceFile, renderSite, verifyPost,
   getSiteConfig, setSiteConfig, generateQRCodeSVG,
@@ -435,7 +435,7 @@ async function handleAddConfig() {
 
   try {
     await setIdentityConfig([[key, value]]);
-    await saveToIDB(pyodide, getWorkspacePath());
+    await saveToIDB(pyodide, getWorkspacePath(), { force: true });
     keyEl.value = '';
     valEl.value = '';
     showStatus(statusEl, `Config "${key}" set!`, 'success');
@@ -449,7 +449,7 @@ async function handleRemoveConfig(key) {
   const statusEl = document.getElementById('identity-status');
   try {
     await setIdentityConfig([[key, '']]);
-    await saveToIDB(pyodide, getWorkspacePath());
+    await saveToIDB(pyodide, getWorkspacePath(), { force: true });
     showStatus(statusEl, `Config "${key}" removed!`, 'success');
     await refreshIdentity();
   } catch (e) {
@@ -466,7 +466,7 @@ async function handleAddLocation() {
 
   try {
     await addLocation(url);
-    await saveToIDB(pyodide, getWorkspacePath());
+    await saveToIDB(pyodide, getWorkspacePath(), { force: true });
     urlEl.value = '';
     showStatus(statusEl, 'Location added!', 'success');
     await refreshIdentity();
@@ -479,7 +479,7 @@ async function handleRemoveLocation(url) {
   const statusEl = document.getElementById('identity-status');
   try {
     await removeLocation(url);
-    await saveToIDB(pyodide, getWorkspacePath());
+    await saveToIDB(pyodide, getWorkspacePath(), { force: true });
     showStatus(statusEl, 'Location removed!', 'success');
     await refreshIdentity();
   } catch (e) {
@@ -554,8 +554,23 @@ async function refreshIdentity() {
         configEl.innerHTML = '<p style="color:var(--text-muted)">No custom config set</p>';
       }
 
-      // Locations
+      // Locations — auto-deduplicate if needed
       const locsEl = document.getElementById('locations-list');
+      const normalizedLocs = info.locations.map(l => l.replace(/\/+$/, ''));
+      if (new Set(normalizedLocs).size < normalizedLocs.length) {
+        try {
+          const removed = await dedupLocations();
+          if (removed > 0) {
+            await saveToIDB(getPyodide(), getWorkspacePath(), { force: true });
+            showToast(`Removed ${removed} duplicate location(s)`);
+            // Re-read identity to get cleaned-up list
+            const updated = await getIdentityInfo();
+            info.locations = updated.locations;
+          }
+        } catch (e) {
+          console.warn('Location dedup failed:', e);
+        }
+      }
       if (info.locations.length > 0) {
         locsEl.innerHTML = info.locations.map(loc =>
           `<div class="location-row">
@@ -805,7 +820,7 @@ async function handlePublish() {
               await addLocation(pagesUrl);
               addPullSource(pagesUrl, 'GitHub Pages');
               document.getElementById('add-location-prompt').textContent = '✓ Location added!';
-              await saveToIDB((await import('./pyodide-loader.js')).getPyodide(), getWorkspacePath());
+              await saveToIDB((await import('./pyodide-loader.js')).getPyodide(), getWorkspacePath(), { force: true });
             });
           }
         } catch { /* non-critical */ }
@@ -850,7 +865,7 @@ async function refreshSync() {
           e.target.textContent = 'Adding…';
           await addLocation(pagesUrl);
           addPullSource(pagesUrl, 'GitHub Pages');
-          await saveToIDB(getPyodide(), getWorkspacePath());
+          await saveToIDB(getPyodide(), getWorkspacePath(), { force: true });
           hintEl.innerHTML = '<p class="hint-banner">✓ Location added!</p>';
           setTimeout(() => hintEl.classList.add('hidden'), 3000);
         });

@@ -409,6 +409,34 @@ with open('${getChangelog()}', 'a') as _cl:
 `);
 }
 
+export async function dedupLocations() {
+  const result = await runPy(`
+import os, glob, json
+os.chdir('${getWorkspace()}')
+
+identity_files = glob.glob('${getPublic()}/identity/*/latest.cbor')
+if not identity_files:
+    _bridge_out = json.dumps(0)
+else:
+    import cbor2
+    with open(identity_files[0], 'rb') as f:
+        entry = cbor2.load(f)
+    key_id = entry['content']['author']['id']
+
+    private_key_files = glob.glob('${getPrivate()}/private_identity.*.cbor') + glob.glob('${getPrivate()}/signing.*.cbor')
+
+    from coulomb.identity import dedup_locations
+    with open('${getChangelog()}', 'a') as _cl:
+        removed = dedup_locations(
+            identity='${getPublic()}/identity/' + key_id,
+            change_log=_cl,
+            signatures=private_key_files
+        )
+    _bridge_out = json.dumps(removed)
+`);
+  return JSON.parse(result);
+}
+
 // ── Posts ──
 
 export async function createPost(text, files = [], replyTo = null) {

@@ -139,6 +139,11 @@ def add_location(identity, change_log, signatures, location, index):
     author = read_cbor(os.path.join(identity, 'latest.cbor'))['content']['author']
     locations = author.setdefault('locations', [])
 
+    # Normalize: strip trailing slashes for comparison
+    normalized = location.rstrip('/')
+    if any(loc.rstrip('/') == normalized for loc in locations):
+        return  # already present
+
     index = index if index is not None else len(locations)
     locations.insert(index, location)
 
@@ -152,6 +157,26 @@ def rm_location(identity, change_log, signatures, location):
     locations.remove(location)
 
     write_updated_identity(author, identity, change_log, signatures)
+
+
+def dedup_locations(identity, change_log, signatures):
+    """Remove duplicate locations, keeping the first occurrence."""
+    author = read_cbor(os.path.join(identity, 'latest.cbor'))['content']['author']
+    locations = author.setdefault('locations', [])
+
+    seen = set()
+    unique = []
+    for loc in locations:
+        normalized = loc.rstrip('/')
+        if normalized not in seen:
+            seen.add(normalized)
+            unique.append(loc)
+
+    if len(unique) < len(locations):
+        author['locations'] = unique
+        write_updated_identity(author, identity, change_log, signatures)
+        return len(locations) - len(unique)
+    return 0
 
 
 def main(sub2cmd, **kwargs):
