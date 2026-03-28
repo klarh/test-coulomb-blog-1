@@ -225,7 +225,7 @@ TEMPLATES = dict(
             <div class="post-body md-content">{{ post.text|markdown }}</div>
             {% if post.get('tags') %}
             <div class="post-tags">
-                {% for tag in post.tags %}<a href="{{ root_path }}/{{ html_dir }}/tags/{{ tag.value }}/latest.html" class="post-tag">#{{ tag.value|display_tag }}</a> {% endfor %}
+                {% for tag in post.tags %}<a href="{{ root_path }}/{{ html_dir }}/tags/{{ tag.type }}/{{ tag.value }}/latest.html" class="post-tag">#{{ tag.value|display_tag }}</a> {% endfor %}
             </div>
             {% endif %}
             {% for reply in post.get('replies', []) %}
@@ -251,7 +251,7 @@ TEMPLATES = dict(
                 <div class="post-body md-content">{{ reply.text|markdown }}</div>
                 {% if reply.get('tags') %}
                 <div class="post-tags">
-                    {% for tag in reply.tags %}<a href="{{ root_path }}/{{ html_dir }}/tags/{{ tag.value }}/latest.html" class="post-tag">#{{ tag.value|display_tag }}</a> {% endfor %}
+                    {% for tag in reply.tags %}<a href="{{ root_path }}/{{ html_dir }}/tags/{{ tag.type }}/{{ tag.value }}/latest.html" class="post-tag">#{{ tag.value|display_tag }}</a> {% endfor %}
                 </div>
                 {% endif %}
             </div>
@@ -408,6 +408,7 @@ class BuildCache:
         create_tag_page_deps = ' '.join(
             [
                 'CREATE TABLE IF NOT EXISTS tag_page_deps (',
+                'tag_type TEXT,',
                 'tag_value TEXT,',
                 'target_path TEXT,',
                 'source_file TEXT,',
@@ -578,15 +579,15 @@ class BuildCache:
         insert_tag_ref = ' '.join(
             [
                 'INSERT OR IGNORE INTO tag_page_deps',
-                '(tag_value, target_path, source_file, post_path, timestamp)',
-                'VALUES (?, NULL, ?, NULL, ?)',
+                '(tag_type, tag_value, target_path, source_file, post_path, timestamp)',
+                'VALUES (?, ?, NULL, ?, NULL, ?)',
             ]
         )
 
         # Select unpaged tag refs grouped by tag
         select_tag_unpaged = ' '.join(
             [
-                'SELECT ROWID, tag_value, source_file, timestamp',
+                'SELECT ROWID, tag_type, tag_value, source_file, timestamp',
                 'FROM tag_page_deps WHERE target_path IS NULL',
                 'ORDER BY tag_value, timestamp',
             ]
@@ -608,7 +609,8 @@ class BuildCache:
         # Get all pending tag pages (tags with changed content)
         select_pending_tag_pages = ' '.join(
             [
-                'SELECT DISTINCT tag_page_deps.tag_value,',
+                'SELECT DISTINCT tag_page_deps.tag_type,',
+                'tag_page_deps.tag_value,',
                 'tag_page_deps.target_path',
                 'FROM tag_page_deps',
                 'INNER JOIN pending_changes ON',
@@ -647,8 +649,9 @@ class BuildCache:
         # All distinct tags (for tag index)
         select_all_tags = ' '.join(
             [
-                'SELECT tag_value, COUNT(*) AS cnt',
-                'FROM tag_page_deps GROUP BY tag_value ORDER BY tag_value',
+                'SELECT tag_type, tag_value, COUNT(*) AS cnt',
+                'FROM tag_page_deps GROUP BY tag_type, tag_value',
+                'ORDER BY tag_value',
             ]
         )
 
@@ -665,6 +668,16 @@ class BuildCache:
     def init(self):
         with self.connection as conn:
             conn.executescript(self.Queries.init)
+            # Migrate tag_page_deps: add tag_type column if missing
+            cols = {
+                row[1]
+                for row in conn.execute(
+                    "PRAGMA table_info(tag_page_deps)"
+                )
+            }
+            if cols and 'tag_type' not in cols:
+                conn.execute("DROP TABLE tag_page_deps")
+                conn.execute(self.Queries.create_tag_page_deps)
 
     def stale_check(self, directory):
         with self.connection as conn:
@@ -736,16 +749,17 @@ class BuildCache:
             parts = path.split('/')
             if len(parts) < 4 or parts[0] != 'tags':
                 continue
+            tag_type = parts[1]
             tag_value = parts[2]
             self.connection.execute(
-                self.Queries.insert_tag_ref, (tag_value, path, timestamp)
+                self.Queries.insert_tag_ref, (tag_type, tag_value, path, timestamp)
             )
 
         # 2. For each tag, resolve post_path from the ref CBOR
         unpaged = list(
             self.connection.execute(self.Queries.select_tag_unpaged)
         )
-        for rowid, tag_value, source_file, timestamp in unpaged:
+        for rowid, tag_type, tag_value, source_file, timestamp in unpaged:
             ref_path = os.path.join(self.root, source_file)
             try:
                 with open(ref_path, 'rb') as f:
@@ -756,7 +770,7 @@ class BuildCache:
 
             # Check how many items are on this tag's latest page
             latest_target = os.path.join(
-                self.subdir, 'tags', tag_value, 'latest.html'
+                self.subdir, 'tags', tag_type, tag_value, 'latest.html'
             )
             (count,) = self.connection.execute(
                 self.Queries.select_tag_latest_count, (tag_value,)
@@ -765,7 +779,7 @@ class BuildCache:
             if count >= pagination:
                 # Freeze the current latest page
                 frozen_name = os.path.join(
-                    self.subdir, 'tags', tag_value,
+                    self.subdir, 'tags', tag_type, tag_value,
                     'page.{}.html'.format(timestamp),
                 )
                 self.connection.execute(
@@ -783,17 +797,19 @@ class BuildCache:
     def get_pending_tag_pages(self):
         """Return tag pages that need re-rendering.
 
-        Returns ``{target_path: {tag_value, files: [(ref_file, post_path)],
+        Returns ``{target_path: {tag_type, tag_value, files: [(ref_file, post_path)],
         previous_page?}}``.
         """
         rows = list(
             self.connection.execute(self.Queries.select_pending_tag_pages)
         )
         groups = {}
-        for tag_value, target_path in rows:
+        for tag_type, tag_value, target_path in rows:
             if target_path in groups:
                 continue
-            desc = groups[target_path] = {'tag_value': tag_value, 'files': []}
+            desc = groups[target_path] = {
+                'tag_type': tag_type, 'tag_value': tag_value, 'files': [],
+            }
             for source, post_path in self.connection.execute(
                 self.Queries.select_tag_page_sources,
                 (tag_value, target_path),
@@ -810,7 +826,7 @@ class BuildCache:
         return groups
 
     def get_all_tags(self):
-        """Return list of (tag_value, count) for the tag index page."""
+        """Return list of (tag_type, tag_value, count) for the tag index page."""
         return list(self.connection.execute(self.Queries.select_all_tags))
 
     def get_pending_pages(self):
@@ -1124,12 +1140,13 @@ def render_tag_pages(cache, templates, text_config, change_log=None):
     if all_tags and tag_pages:
         tag_summaries = [
             dict(
+                type=tt,
                 value=tv,
                 display=display_tag(tv),
                 count=cnt,
-                url='{}/latest.html'.format(tv),
+                url='{}/{}/latest.html'.format(tt, tv),
             )
-            for tv, cnt in all_tags
+            for tt, tv, cnt in all_tags
         ]
         tag_index_file = os.path.join(root, html_dir, 'tags', 'index.html')
         os.makedirs(os.path.dirname(tag_index_file), exist_ok=True)

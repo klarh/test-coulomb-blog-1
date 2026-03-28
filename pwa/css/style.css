@@ -1052,6 +1052,21 @@ label {
   margin: 1rem 0;
 }
 
+.sidebar-sync-btn {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.5rem;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.sidebar-sync-btn:hover { opacity: 0.85; }
+.sidebar-sync-btn:disabled { opacity: 0.5; cursor: default; }
+
 /* Sidebar navigation */
 .sidebar-nav {
   display: flex;

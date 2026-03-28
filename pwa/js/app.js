@@ -262,6 +262,7 @@ function bindEvents() {
 
   // Accounts
   document.getElementById('btn-sidebar-create-account').addEventListener('click', handleCreateAccount);
+  document.getElementById('btn-sidebar-sync').addEventListener('click', handleSidebarSync);
 
   // Data portability
   document.getElementById('btn-export').addEventListener('click', handleExport);
@@ -771,6 +772,61 @@ async function handleGitHubDisconnect() {
   await refreshSync();
 }
 
+async function handleSidebarSync() {
+  const btn = document.getElementById('btn-sidebar-sync');
+  btn.disabled = true;
+  btn.textContent = 'Syncing…';
+  try {
+    if (!navigator.onLine) {
+      showToast('You appear to be offline', { type: 'error' });
+      return;
+    }
+
+    // Pull
+    const pullResult = await pullAllSources();
+    const pulled = pullResult.count || 0;
+
+    // Render (rebuilds indices so pulled posts are indexed)
+    const initialized = await isInitialized();
+    if (initialized) {
+      const includePwa = localStorage.getItem('coulomb_bundle_pwa') === '1';
+      await renderSite({ includePwa });
+    }
+
+    // Publish if backend is connected
+    let published = 0;
+    if (backend.connected) {
+      const allPaths = await getAllPublicFiles();
+      if (allPaths.length > 0) {
+        const files = [];
+        for (const relPath of allPaths) {
+          const content = readWorkspaceFile(relPath);
+          if (content) files.push({ path: relPath, content });
+        }
+        const result = await backend.publish(files, 'coulomb: publish');
+        if (result.success) {
+          published = result.filesPublished || 0;
+          const pyodide = (await import('./pyodide-loader.js')).getPyodide();
+          await clearChangelog(pyodide, getWorkspacePath());
+        }
+      }
+    }
+
+    await saveToIDB(getPyodide(), getWorkspacePath());
+    const parts = [];
+    if (pulled > 0) parts.push(`${pulled} pulled`);
+    if (published > 0) parts.push(`${published} published`);
+    showToast(parts.length > 0 ? `Synced: ${parts.join(', ')}` : 'Already up to date');
+    if (pulled > 0) await refreshCurrentView();
+  } catch (e) {
+    console.error('Sidebar sync failed:', e);
+    showToast(`Sync failed: ${e.message}`, { type: 'error', timeout: 8000 });
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⟳ Sync';
+  }
+}
+
 async function handlePublish() {
   const btn = document.getElementById('btn-publish');
   const statusEl = document.getElementById('sync-status');
@@ -993,6 +1049,7 @@ async function handlePullOne(url) {
     statusEl.textContent = count > 0 ? `Pulled ${count} new item(s)` : 'Already up to date';
     await saveToIDB(pyodide, getWorkspacePath());
     renderSources();
+    if (count > 0 && currentView === 'feed') await refreshFeed();
   } catch (e) {
     statusEl.textContent = `Error: ${e.message}`;
   }
@@ -1020,6 +1077,7 @@ async function handlePullAll() {
     }
     await saveToIDB(pyodide, getWorkspacePath());
     renderSources();
+    if (result.count > 0 && currentView === 'feed') await refreshFeed();
   } catch (e) {
     statusEl.textContent = `Error: ${e.message}`;
   } finally {
@@ -1518,29 +1576,22 @@ _bridge_out = json.dumps({'key_id': key_id, 'has_identity': _has_identity, 'loca
 
     if (data.has_identity) {
       showStatus(statusEl, `Key and identity imported! Syncing posts…${emojiHtml}`, 'success', { timeout: 0 });
-      await refreshSidebar();
 
       // Auto-add identity locations as pull sources and sync post history
       const locations = data.locations || [];
-      let pullCount = 0;
       for (const loc of locations) {
         try {
           addPullSource(loc, 'Auto-added from identity');
-          const n = await pullFromSource(loc);
-          pullCount += n;
+          await pullFromSource(loc);
         } catch (e) {
           console.warn('Pull from', loc, 'failed:', e);
         }
       }
-      if (pullCount > 0) {
-        await saveToIDB(getPyodide(), getWorkspacePath());
-      }
-
-      showStatus(statusEl, `Identity imported! ${pullCount} post(s) synced. Reloading…${emojiHtml}`, 'success', { timeout: 0 });
-      setTimeout(() => location.reload(), 1500);
+      await saveToIDB(getPyodide(), getWorkspacePath());
+      location.reload();
     } else {
       showStatus(statusEl, `Key imported. Set up a pull source to sync your identity.${emojiHtml}`, 'success', { timeout: 0 });
-      setTimeout(() => location.reload(), 1500);
+      location.reload();
     }
   } catch (e) {
     showStatus(statusEl, `Import failed: ${e.message}`, 'error');

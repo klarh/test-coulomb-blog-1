@@ -29,16 +29,25 @@ export async function saveToIDB(pyodide, basePath = '/workspace', { force = fals
   const changelog = getChangelogEntries(pyodide, basePath);
 
   if (!force && changelog.length > 0) {
-    // Incremental: save only changed files (from changelog) + private dir + changelog file
+    // Incremental: save only changed files (from changelog) + private dir + workspace root files
     const changedPaths = new Set();
     for (const relPath of changelog) {
       changedPaths.add(`${publicDir}/${relPath}`);
     }
-    // Always include private dir (keys) and the changelog file itself
+    // Always include private dir (keys)
     for (const f of listFilesRecursive(pyodide, privateDir)) {
       changedPaths.add(f);
     }
-    changedPaths.add(`${basePath}/changelog`);
+    // Always include workspace root-level files (changelog, pull_cache.db, etc.)
+    try {
+      for (const name of pyodide.FS.readdir(basePath)) {
+        if (name === '.' || name === '..') continue;
+        const full = `${basePath}/${name}`;
+        try {
+          if (!pyodide.FS.isDir(pyodide.FS.stat(full).mode)) changedPaths.add(full);
+        } catch {}
+      }
+    } catch {}
     filesToSave = [...changedPaths].filter(p => {
       try { pyodide.FS.stat(p); return true; } catch { return false; }
     });

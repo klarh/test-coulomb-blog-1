@@ -39,24 +39,8 @@ class Queries:
             'UNIQUE(source_id, path) ON CONFLICT REPLACE)',
         ]
     )
-    create_remaps = ' '.join(
-        [
-            'CREATE TABLE IF NOT EXISTS remaps (',
-            'source_id INTEGER, source_path TEXT, dest_path TEXT,',
-            'UNIQUE(source_id, source_path) ON CONFLICT IGNORE)',
-        ]
-    )
 
-    init = ';'.join([create_sources, create_hashes, create_remaps])
-
-    select_hash = ' '.join(
-        [
-            'SELECT hash FROM source_hashes',
-            'WHERE source_id = ?',
-            'AND source_hashes.path = ?',
-            'AND source_hashes.hash_name = ?',
-        ]
-    )
+    init = ';'.join([create_sources, create_hashes])
 
     insert_location = 'INSERT INTO sources VALUES (?)'
 
@@ -70,12 +54,6 @@ class Queries:
             'source_id = ? AND path = ? AND hash_name = ?',
         ]
     )
-
-    get_remap = ' '.join(
-        ['SELECT dest_path FROM remaps WHERE', 'source_id = ? AND source_path = ?']
-    )
-
-    set_remap = 'INSERT INTO remaps VALUES (?, ?, ?)'
 
 
 def _url_fetcher(location):
@@ -131,7 +109,7 @@ class PullCache(IndexWalker):
     def get_stored_hash(self, path):
         with self.connection as conn:
             for (last_hash,) in conn.execute(
-                Queries.select_hash, (self._remote_id, path, self.hash_name)
+                Queries.get_hash, (self._remote_id, path, self.hash_name)
             ):
                 return last_hash
         return None
@@ -191,41 +169,59 @@ class PullCache(IndexWalker):
             if last_hash == hashval:
                 return
 
-            dest_path = None
-            for (dest_path,) in conn.execute(Queries.get_remap, (remote_id, filename)):
-                pass
+        entry_bytes = self.get(urljoin(location, filename))
+        full_dest = os.path.join(self.root, filename)
 
-            if not dest_path:
-                dest_path = self._remap_post(
-                    conn, remote_id, location, filename, entry_type, entry_id
-                )
+        if not os.path.exists(full_dest):
+            os.makedirs(os.path.dirname(full_dest), exist_ok=True)
+            with open(full_dest, 'wb') as f:
+                f.write(entry_bytes)
+            self._log_change(filename)
+            self.imported_count += 1
 
-            # Update hash after successful import
+            # Regenerate tag reference files for imported posts
+            self._regenerate_tag_refs(full_dest, filename)
+
+        with self.connection as conn:
             conn.execute(
                 Queries.insert_hash, (remote_id, filename, hashval, self.hash_name)
             )
 
-    def _import_file(self, conn, remote_id, location, filename, entry_bytes):
-        """Write a pulled file to its original path (rsync-style merge)."""
-        full_dest = os.path.join(self.root, filename)
+    def _regenerate_tag_refs(self, full_path, rel_path):
+        """Create tag reference files for an imported post."""
+        from .tags import extract_tags
+        from .util import write_cbor
 
-        if os.path.exists(full_dest):
-            # Already present locally — just record the mapping
-            conn.execute(Queries.set_remap, (remote_id, filename, filename))
-            return filename
+        try:
+            with open(full_path, 'rb') as f:
+                entry = cbor2.load(f)
+        except (cbor2.CBORDecodeError, OSError):
+            return
 
-        conn.execute(Queries.set_remap, (remote_id, filename, filename))
+        content = entry.get('content', {})
+        text = content.get('text', '')
+        tags = extract_tags(text)
+        if not tags:
+            return
 
-        os.makedirs(os.path.dirname(full_dest), exist_ok=True)
-        with open(full_dest, 'wb') as f:
-            f.write(entry_bytes)
-        self._log_change(filename)
-        self.imported_count += 1
-        return filename
+        post_id = content.get('id', '')
+        author_id = content.get('author', {}).get('id', '')
+        timestamp = content.get('time', '')
 
-    def _remap_post(self, conn, remote_id, location, filename, entry_type, entry_id):
-        entry_bytes = self.get(urljoin(location, filename))
-        return self._import_file(conn, remote_id, location, filename, entry_bytes)
+        for tag in tags:
+            tag_dir = os.path.join(self.root, 'tags', tag['type'], tag['value'])
+            ref_fname = os.path.join(tag_dir, 'ref.{}.cbor'.format(post_id))
+            if os.path.exists(ref_fname):
+                continue
+            os.makedirs(tag_dir, exist_ok=True)
+            ref = dict(
+                author=author_id,
+                post_id=post_id,
+                post_path=rel_path,
+                timestamp=timestamp,
+            )
+            write_cbor({ref_fname: ref})
+            self._log_change(os.path.relpath(ref_fname, self.root))
 
     def _import_identity(self, location, remote_id, filename, hashval, remote_subdir):
         with self.connection as conn:

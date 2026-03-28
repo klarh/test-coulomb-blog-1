@@ -937,8 +937,11 @@ from pyodide.ffi import to_js
 class _BrowserPullCache(PullCache):
     def get(self, location):
         from js import XMLHttpRequest
+        import time
         xhr = XMLHttpRequest.new()
-        xhr.open('GET', location, False)
+        # Cache-bust to avoid stale CDN responses for index.cbor
+        sep = '&' if '?' in location else '?'
+        xhr.open('GET', location + sep + '_t=' + str(int(time.time() * 1000)), False)
         # Can't use responseType='arraybuffer' with sync XHR on main thread;
         # use x-user-defined charset to preserve binary data as text
         xhr.overrideMimeType('text/plain; charset=x-user-defined')
