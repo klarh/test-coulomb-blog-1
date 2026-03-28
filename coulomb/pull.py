@@ -1,4 +1,4 @@
-import datetime
+
 import os
 import sqlite3
 from posixpath import join as urljoin
@@ -7,7 +7,7 @@ import cbor2
 
 from .cmd import register_subcommand
 from .index_walker import IndexWalker, load_index_bytes, BaseQueries
-from .TimeArchive import TimeArchive
+
 
 
 @register_subcommand('pull', help='Import external post repositories')
@@ -205,48 +205,27 @@ class PullCache(IndexWalker):
                 Queries.insert_hash, (remote_id, filename, hashval, self.hash_name)
             )
 
-    def _remap_post(self, conn, remote_id, location, filename, entry_type, entry_id):
-        archive_kwargs = dict(prefix='posts')
+    def _import_file(self, conn, remote_id, location, filename, entry_bytes):
+        """Write a pulled file to its original path (rsync-style merge)."""
+        full_dest = os.path.join(self.root, filename)
 
-        entry_bytes = self.get(urljoin(location, filename))
-        entry = cbor2.loads(entry_bytes)
-        timestamp = datetime.datetime.fromisoformat(entry['content']['time'])
+        if os.path.exists(full_dest):
+            # Already present locally — just record the mapping
+            conn.execute(Queries.set_remap, (remote_id, filename, filename))
+            return filename
 
-        if entry_type == 'reply':
-            reply_target_timestamp = datetime.datetime.fromisoformat(
-                entry['content']['reply_to']['post_id']
-            )
-            target_archive = TimeArchive(prefix='posts')
-            target_path = target_archive.get_path(reply_target_timestamp)
-            reply_subdir = os.path.join(target_path.subdirectory, 'replies')
-            archive_kwargs['subdir_format'] = reply_subdir
-        else:
-            archive_kwargs['prefix'] = 'posts'
-
-        bump = 0
-        while True:
-            if entry_type == 'reply':
-                archive_kwargs['entry_format'] = 'reply.{{id}}.{}.cbor'.format(bump)
-            else:
-                archive_kwargs['entry_format'] = 'post.{{id}}.{}.cbor'.format(bump)
-
-            dest_archive = TimeArchive(**archive_kwargs)
-            dest_path = dest_archive.get_path(timestamp)
-            full_dest = os.path.join(self.root, dest_path.path)
-
-            if not os.path.exists(full_dest):
-                break
-
-            bump += 1
-
-        conn.execute(Queries.set_remap, (remote_id, filename, dest_path.path))
+        conn.execute(Queries.set_remap, (remote_id, filename, filename))
 
         os.makedirs(os.path.dirname(full_dest), exist_ok=True)
         with open(full_dest, 'wb') as f:
             f.write(entry_bytes)
-        self._log_change(dest_path.path)
+        self._log_change(filename)
         self.imported_count += 1
-        return dest_path.path
+        return filename
+
+    def _remap_post(self, conn, remote_id, location, filename, entry_type, entry_id):
+        entry_bytes = self.get(urljoin(location, filename))
+        return self._import_file(conn, remote_id, location, filename, entry_bytes)
 
     def _import_identity(self, location, remote_id, filename, hashval, remote_subdir):
         with self.connection as conn:

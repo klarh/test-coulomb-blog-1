@@ -41,6 +41,32 @@ function loadAndApplyTheme() {
   applyTheme(saved.accent, saved.mode);
 }
 
+// ── Draft Persistence ──
+function getDraftStorageKey() {
+  return `coulomb_draft_${getActiveAccount()}`;
+}
+
+function saveDraft() {
+  const text = document.getElementById('post-text').value;
+  if (text) {
+    localStorage.setItem(getDraftStorageKey(), text);
+  } else {
+    localStorage.removeItem(getDraftStorageKey());
+  }
+}
+
+function restoreDraft() {
+  const textEl = document.getElementById('post-text');
+  const saved = localStorage.getItem(getDraftStorageKey());
+  if (saved && !textEl.value) {
+    textEl.value = saved;
+  }
+}
+
+function clearDraft() {
+  localStorage.removeItem(getDraftStorageKey());
+}
+
 // ── State ──
 let pyodide = null;
 let backend = new GitHubPagesBackend();
@@ -50,6 +76,10 @@ let replyTarget = null; // { path, text, author_id }
 // ── Service Worker Registration ──
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch(console.error);
+  // Reload when a new service worker takes control (new JS version deployed)
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    location.reload();
+  });
 }
 
 // ── Boot ──
@@ -133,6 +163,7 @@ for item in os.listdir(old):
     }
 
     bindEvents();
+    restoreDraft();
     await refreshSidebar();
     await refreshCurrentView();
   } catch (e) {
@@ -208,6 +239,7 @@ function bindEvents() {
   document.getElementById('btn-post').addEventListener('click', handlePost);
   document.getElementById('post-files').addEventListener('change', handleFileSelect);
   document.getElementById('btn-cancel-reply').addEventListener('click', cancelReply);
+  document.getElementById('post-text').addEventListener('input', saveDraft);
 
   // Identity
   document.getElementById('btn-init').addEventListener('click', handleInit);
@@ -280,6 +312,7 @@ async function handlePost() {
     await saveToIDB(pyodide, getWorkspacePath());
 
     textEl.value = '';
+    clearDraft();
     fileInput.value = '';
     document.getElementById('attached-files').textContent = '';
     cancelReply();
@@ -1081,13 +1114,16 @@ async function handleCreateAccount() {
 
 async function handleSwitchAccount(name) {
   try {
+    saveDraft();
     await saveToIDB(pyodide, getWorkspacePath());
+    document.getElementById('post-text').value = '';
     await switchAccount(name);
     await restoreFromIDB(getPyodide(), getWorkspacePath());
     // Reset GitHub backend to the new account's config
     backend.setAccountScope(name);
     backend.tryRestore();
     loadAndApplyTheme();
+    restoreDraft();
     closeSidebar();
     await refreshSidebar();
     // If the account has no identity, go to Identity tab to initialize
@@ -1114,19 +1150,12 @@ async function handleDeleteAccount(name) {
 
     if (isActive && others.length > 0) {
       await switchAccount(others[0]);
-      await restoreFromIDB(getPyodide(), getWorkspacePath());
-      backend.setAccountScope(others[0]);
-      backend.tryRestore();
-      loadAndApplyTheme();
       await deleteAccount(name);
     } else if (isActive) {
-      // Last account: force-delete, then create a fresh default
       await backend.disconnect();
       await deleteAccount(name, { force: true });
       await createAccount('default');
       await switchAccount('default');
-      backend.setAccountScope('default');
-      backend.tryRestore();
     } else {
       await deleteAccount(name);
     }
@@ -1134,11 +1163,9 @@ async function handleDeleteAccount(name) {
     await deleteFromIDB(`/accounts/${name}`);
     localStorage.removeItem(`coulomb_theme_${name}`);
     localStorage.removeItem(`coulomb_pull_sources_${name}`);
+    localStorage.removeItem(`coulomb_draft_${name}`);
     GitHubPagesBackend.removeAccountConfig(name);
-    closeSidebar();
-    await refreshSidebar();
-    showView('identity');
-    await refreshCurrentView();
+    location.reload();
   } catch (e) {
     alert(`Error: ${e.message}`);
   }
@@ -1180,8 +1207,7 @@ async function handleImport(e) {
     showStatus(statusEl, 'Importing…', 'success');
     await importWorkspace(getPyodide(), file, getWorkspacePath());
     await saveToIDB(getPyodide(), getWorkspacePath(), { force: true });
-    showStatus(statusEl, 'Import complete!', 'success');
-    await refreshCurrentView();
+    location.reload();
   } catch (err) {
     showStatus(statusEl, `Import failed: ${err.message}`, 'error');
   }
@@ -1510,11 +1536,11 @@ _bridge_out = json.dumps({'key_id': key_id, 'has_identity': _has_identity, 'loca
         await saveToIDB(getPyodide(), getWorkspacePath());
       }
 
-      showStatus(statusEl, `Identity imported! ${pullCount} post(s) synced.${emojiHtml}`, 'success', { timeout: 0 });
-      showView('identity');
-      await refreshIdentity();
+      showStatus(statusEl, `Identity imported! ${pullCount} post(s) synced. Reloading…${emojiHtml}`, 'success', { timeout: 0 });
+      setTimeout(() => location.reload(), 1500);
     } else {
       showStatus(statusEl, `Key imported. Set up a pull source to sync your identity.${emojiHtml}`, 'success', { timeout: 0 });
+      setTimeout(() => location.reload(), 1500);
     }
   } catch (e) {
     showStatus(statusEl, `Import failed: ${e.message}`, 'error');
