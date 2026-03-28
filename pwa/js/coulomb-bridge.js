@@ -803,16 +803,21 @@ rebuild_index(
 _pwa_dir = '/coulomb/pwa' if ${includePwa ? 'True' : 'False'} and os.path.isdir('/coulomb/pwa') else None
 
 from coulomb.render import main as coulomb_render
-coulomb_render(
-    root=RENDER_ROOT,
-    cache_file='${getPrivate()}/render_cache.sqlite',
-    hash_name='sha512',
-    template_dir=None,
-    change_log=None,
-    post_dirs=['posts'],
-    html_dir='pages',
-    pwa_dir=_pwa_dir,
-)
+try:
+    coulomb_render(
+        root=RENDER_ROOT,
+        cache_file='${getPrivate()}/render_cache.sqlite',
+        hash_name='sha512',
+        template_dir=None,
+        change_log=None,
+        post_dirs=['posts'],
+        html_dir='pages',
+        pwa_dir=_pwa_dir,
+    )
+except Exception as _render_err:
+    import traceback
+    _tb = traceback.format_exc()
+    raise RuntimeError(f'Render failed: {_tb}') from _render_err
 
 # Copy rendered pages + updated static assets back to workspace public
 _copy_dirs = ['pages', 'static']

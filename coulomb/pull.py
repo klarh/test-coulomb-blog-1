@@ -143,6 +143,9 @@ class PullCache(IndexWalker):
             )
 
     def on_entry(self, dirpath, entry, hashval):
+        # Tag references are derived data, regenerated locally after import
+        if entry['type'] == 'ref':
+            return
         sub_filename = os.path.join(dirpath, entry['filename'])
         if dirpath == '.':
             sub_filename = entry['filename']
